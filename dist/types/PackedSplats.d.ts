@@ -110,6 +110,24 @@ export declare class PackedSplats {
      * Fastest path when data is already in Spark format
      */
     updateFromPackedArray(data: Uint32Array, numSplats?: number): void;
+    /**
+     * GPU video mode data - shader materials and textures
+     */
+    private gpuVideoModeData;
+    /**
+     * Initialize GPU video mode with shader-based decoding
+     * Creates codebook textures and decode shader material
+     */
+    initVideoModeGPU(metadata: SOGVideoMetadata, tileSize: number): void;
+    /**
+     * Update splat data from video texture using GPU shader (zero CPU path)
+     * This is the fastest possible path - no getImageData, no CPU loops
+     */
+    updateFromVideoTextureGPU(renderer: THREE.WebGLRenderer, videoTexture: THREE.Texture, tileUVs: GPUVideoTileUVs, videoWidth: number, videoHeight: number): void;
+    /**
+     * Dispose GPU video mode resources
+     */
+    disposeVideoModeGPU(): void;
 }
 /**
  * SOG video metadata for initializing video mode
@@ -130,6 +148,25 @@ export type SOGVideoTiles = {
     quats: Uint8ClampedArray;
     scales: Uint8ClampedArray;
     sh0: Uint8ClampedArray;
+};
+/**
+ * Tile UV coordinates for GPU video decoding
+ */
+export type GPUVideoTileUV = {
+    u0: number;
+    v0: number;
+    u1: number;
+    v1: number;
+};
+/**
+ * All tile UVs needed for GPU video decoding
+ */
+export type GPUVideoTileUVs = {
+    means_l: GPUVideoTileUV;
+    means_u: GPUVideoTileUV;
+    quats: GPUVideoTileUV;
+    scales: GPUVideoTileUV;
+    sh0: GPUVideoTileUV;
 };
 export declare const dynoPackedSplats: (packedSplats?: PackedSplats) => DynoPackedSplats;
 export declare class DynoPackedSplats extends DynoUniform<typeof TPackedSplats, "packedSplats", {

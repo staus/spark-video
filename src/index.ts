@@ -20,6 +20,8 @@ export {
   type PackedSplatsOptions,
   type SOGVideoMetadata,
   type SOGVideoTiles,
+  type GPUVideoTileUV,
+  type GPUVideoTileUVs,
 } from "./PackedSplats";
 export {
   SplatGenerator,

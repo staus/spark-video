@@ -899,6 +899,211 @@ export class PackedSplats {
     this.numSplats = numSplats ?? data.length / 4;
     this.needsUpdate = true;
   }
+
+  // =============================================
+  // GPU Video Frame Update API
+  // Zero CPU involvement - decode directly in GPU shader
+  // =============================================
+
+  /**
+   * GPU video mode data - shader materials and textures
+   */
+  private gpuVideoModeData: GPUVideoModeData | null = null;
+
+  /**
+   * Initialize GPU video mode with shader-based decoding
+   * Creates codebook textures and decode shader material
+   */
+  initVideoModeGPU(metadata: SOGVideoMetadata, tileSize: number) {
+    // Create scale codebook texture (256x1, R32F format)
+    // Stores original log scale values for GPU decode
+    const scaleData = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      scaleData[i] = metadata.scaleCodebook[i] ?? metadata.scaleCodebook[0];
+    }
+    const scaleCodebookTexture = new THREE.DataTexture(
+      scaleData,
+      256,
+      1,
+      THREE.RedFormat,
+      THREE.FloatType,
+    );
+    scaleCodebookTexture.minFilter = THREE.NearestFilter;
+    scaleCodebookTexture.magFilter = THREE.NearestFilter;
+    scaleCodebookTexture.needsUpdate = true;
+
+    // Create SH0/color codebook texture (256x1, R32F format)
+    // Stores original SH0 values for GPU decode
+    const sh0Data = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      sh0Data[i] = metadata.sh0Codebook[i] ?? metadata.sh0Codebook[0];
+    }
+    const sh0CodebookTexture = new THREE.DataTexture(
+      sh0Data,
+      256,
+      1,
+      THREE.RedFormat,
+      THREE.FloatType,
+    );
+    sh0CodebookTexture.minFilter = THREE.NearestFilter;
+    sh0CodebookTexture.magFilter = THREE.NearestFilter;
+    sh0CodebookTexture.needsUpdate = true;
+
+    // Create decode shader material
+    const shaderCode = getShaders().videoDecodeUvec4;
+    const vertexShader = `
+      in vec3 position;
+      void main() {
+        gl_Position = vec4(position, 1.0);
+      }
+    `;
+
+    const material = new THREE.RawShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader,
+      fragmentShader: shaderCode,
+      uniforms: {
+        targetLayer: { value: 0 },
+        targetBase: { value: 0 },
+        targetCount: { value: metadata.count },
+        videoTexture: { value: null },
+        videoSize: { value: new THREE.Vector2(0, 0) },
+        tileUV_means_l: { value: new THREE.Vector4(0, 0, 0, 0) },
+        tileUV_means_u: { value: new THREE.Vector4(0, 0, 0, 0) },
+        tileUV_quats: { value: new THREE.Vector4(0, 0, 0, 0) },
+        tileUV_scales: { value: new THREE.Vector4(0, 0, 0, 0) },
+        tileUV_sh0: { value: new THREE.Vector4(0, 0, 0, 0) },
+        tileSize: { value: tileSize },
+        positionMins: {
+          value: new THREE.Vector3(
+            metadata.mins[0],
+            metadata.mins[1],
+            metadata.mins[2],
+          ),
+        },
+        positionMaxs: {
+          value: new THREE.Vector3(
+            metadata.maxs[0],
+            metadata.maxs[1],
+            metadata.maxs[2],
+          ),
+        },
+        scaleCodebook: { value: scaleCodebookTexture },
+        sh0Codebook: { value: sh0CodebookTexture },
+        splatCount: { value: metadata.count },
+      },
+    });
+
+    this.gpuVideoModeData = {
+      count: metadata.count,
+      tileSize,
+      scaleCodebookTexture,
+      sh0CodebookTexture,
+      material,
+      positionMins: metadata.mins,
+      positionMaxs: metadata.maxs,
+    };
+
+    // Ensure we have enough space for the splats
+    this.ensureGenerate(metadata.count);
+    this.numSplats = metadata.count;
+  }
+
+  /**
+   * Update splat data from video texture using GPU shader (zero CPU path)
+   * This is the fastest possible path - no getImageData, no CPU loops
+   */
+  updateFromVideoTextureGPU(
+    renderer: THREE.WebGLRenderer,
+    videoTexture: THREE.Texture,
+    tileUVs: GPUVideoTileUVs,
+    videoWidth: number,
+    videoHeight: number,
+  ) {
+    if (!this.gpuVideoModeData) {
+      throw new Error("Call initVideoModeGPU() first");
+    }
+    if (!this.target) {
+      throw new Error("Render target not initialized");
+    }
+
+    const { material, count, tileSize } = this.gpuVideoModeData;
+
+    // Update uniforms
+    material.uniforms.videoTexture.value = videoTexture;
+    material.uniforms.videoSize.value.set(videoWidth, videoHeight);
+    material.uniforms.tileSize.value = tileSize;
+
+    // Set tile UV coordinates
+    material.uniforms.tileUV_means_l.value.set(
+      tileUVs.means_l.u0,
+      tileUVs.means_l.v0,
+      tileUVs.means_l.u1,
+      tileUVs.means_l.v1,
+    );
+    material.uniforms.tileUV_means_u.value.set(
+      tileUVs.means_u.u0,
+      tileUVs.means_u.v0,
+      tileUVs.means_u.u1,
+      tileUVs.means_u.v1,
+    );
+    material.uniforms.tileUV_quats.value.set(
+      tileUVs.quats.u0,
+      tileUVs.quats.v0,
+      tileUVs.quats.u1,
+      tileUVs.quats.v1,
+    );
+    material.uniforms.tileUV_scales.value.set(
+      tileUVs.scales.u0,
+      tileUVs.scales.v0,
+      tileUVs.scales.u1,
+      tileUVs.scales.v1,
+    );
+    material.uniforms.tileUV_sh0.value.set(
+      tileUVs.sh0.u0,
+      tileUVs.sh0.v0,
+      tileUVs.sh0.u1,
+      tileUVs.sh0.v1,
+    );
+
+    // Render to packed splat texture
+    const renderState = this.saveRenderState(renderer);
+
+    const layerSize = SPLAT_TEX_WIDTH * SPLAT_TEX_HEIGHT;
+    const numLayers = Math.ceil(count / layerSize);
+
+    PackedSplats.fullScreenQuad.material = material;
+
+    for (let layer = 0; layer < numLayers; layer++) {
+      const layerBase = layer * layerSize;
+      const layerCount = Math.min(count - layerBase, layerSize);
+      const layerYEnd = Math.ceil(layerCount / SPLAT_TEX_WIDTH);
+
+      material.uniforms.targetLayer.value = layer;
+      material.uniforms.targetBase.value = layerBase;
+      material.uniforms.targetCount.value = layerCount;
+
+      this.target.scissor.set(0, 0, SPLAT_TEX_WIDTH, layerYEnd);
+      renderer.setRenderTarget(this.target, layer);
+      renderer.xr.enabled = false;
+      renderer.autoClear = false;
+      PackedSplats.fullScreenQuad.render(renderer);
+    }
+
+    this.resetRenderState(renderer, renderState);
+  }
+
+  /**
+   * Dispose GPU video mode resources
+   */
+  disposeVideoModeGPU() {
+    if (this.gpuVideoModeData) {
+      this.gpuVideoModeData.scaleCodebookTexture.dispose();
+      this.gpuVideoModeData.sh0CodebookTexture.dispose();
+      this.gpuVideoModeData.material.dispose();
+      this.gpuVideoModeData = null;
+    }
+  }
 }
 
 // =============================================
@@ -938,6 +1143,40 @@ type VideoModeData = {
   posFloat16LookupX: Uint16Array;
   posFloat16LookupY: Uint16Array;
   posFloat16LookupZ: Uint16Array;
+};
+
+/**
+ * GPU video mode data - shader materials and codebook textures
+ */
+type GPUVideoModeData = {
+  count: number;
+  tileSize: number;
+  scaleCodebookTexture: THREE.DataTexture;
+  sh0CodebookTexture: THREE.DataTexture;
+  material: THREE.RawShaderMaterial;
+  positionMins: [number, number, number];
+  positionMaxs: [number, number, number];
+};
+
+/**
+ * Tile UV coordinates for GPU video decoding
+ */
+export type GPUVideoTileUV = {
+  u0: number;
+  v0: number;
+  u1: number;
+  v1: number;
+};
+
+/**
+ * All tile UVs needed for GPU video decoding
+ */
+export type GPUVideoTileUVs = {
+  means_l: GPUVideoTileUV;
+  means_u: GPUVideoTileUV;
+  quats: GPUVideoTileUV;
+  scales: GPUVideoTileUV;
+  sh0: GPUVideoTileUV;
 };
 
 // =============================================
