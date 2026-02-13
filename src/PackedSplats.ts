@@ -717,6 +717,168 @@ export class PackedSplats {
   static fullScreenQuad = new FullScreenQuad(
     new THREE.RawShaderMaterial({ visible: false }),
   );
+
+  // =============================================
+  // Video Frame Update API
+  // Enables real-time updates from video gaussian splat formats
+  // =============================================
+
+  /**
+   * SOG video tile metadata for decoding video frames
+   */
+  videoMetadata: {
+    tileSize: number;
+    count: number;
+    mins: [number, number, number];
+    maxs: [number, number, number];
+  } | null = null;
+
+  /**
+   * Initialize for video frame updates with SOG metadata
+   * Call this once before updateFromVideoTiles()
+   */
+  initVideoMode(metadata: {
+    tileSize: number;
+    count: number;
+    mins: [number, number, number];
+    maxs: [number, number, number];
+  }) {
+    this.videoMetadata = metadata;
+    this.ensureSplats(metadata.count);
+    this.numSplats = metadata.count;
+  }
+
+  /**
+   * Update splat data from SOG-format video tiles
+   * This decodes tile pixel data and repacks into Spark's internal format
+   *
+   * Spark packing format (4 x uint32 per splat):
+   * Word 0: RGBA color (R | G<<8 | B<<16 | A<<24)
+   * Word 1: center X,Y as float16 (X | Y<<16)
+   * Word 2: center Z float16 + quat XY octahedral (Z | quatX<<16 | quatY<<24)
+   * Word 3: scales + quat Z (scaleX | scaleY<<8 | scaleZ<<16 | quatZ<<24)
+   *
+   * @param tiles Object containing RGBA pixel data for each tile:
+   *   - means_l: Uint8ClampedArray (lower 8 bits of positions)
+   *   - means_u: Uint8ClampedArray (upper 8 bits of positions)
+   *   - quats: Uint8ClampedArray (quaternion data - already octahedral encoded)
+   *   - scales: Uint8ClampedArray (scale data - already log encoded)
+   *   - sh0: Uint8ClampedArray (color/opacity data)
+   */
+  updateFromVideoTiles(tiles: {
+    means_l: Uint8ClampedArray;
+    means_u: Uint8ClampedArray;
+    quats: Uint8ClampedArray;
+    scales: Uint8ClampedArray;
+    sh0: Uint8ClampedArray;
+  }) {
+    if (!this.videoMetadata) {
+      throw new Error("Call initVideoMode() before updateFromVideoTiles()");
+    }
+    if (!this.packedArray) {
+      throw new Error("PackedArray not initialized");
+    }
+
+    const { count, mins, maxs } = this.videoMetadata;
+    const packed = this.packedArray;
+
+    // Pre-compute position scale factors for uint16 -> world coords
+    const posScaleX = (maxs[0] - mins[0]) / 65535;
+    const posScaleY = (maxs[1] - mins[1]) / 65535;
+    const posScaleZ = (maxs[2] - mins[2]) / 65535;
+
+    // Process each splat
+    for (let i = 0; i < count; i++) {
+      const pixelOffset = i * 4; // RGBA pixels
+      const packedOffset = i * 4; // 4 uint32 per splat
+
+      // Decode position from means_l (low 8 bits) and means_u (high 8 bits)
+      const posXU16 =
+        tiles.means_l[pixelOffset + 0] | (tiles.means_u[pixelOffset + 0] << 8);
+      const posYU16 =
+        tiles.means_l[pixelOffset + 1] | (tiles.means_u[pixelOffset + 1] << 8);
+      const posZU16 =
+        tiles.means_l[pixelOffset + 2] | (tiles.means_u[pixelOffset + 2] << 8);
+
+      // Convert to world coordinates
+      const posX = mins[0] + posXU16 * posScaleX;
+      const posY = mins[1] + posYU16 * posScaleY;
+      const posZ = mins[2] + posZU16 * posScaleZ;
+
+      // Convert to float16
+      const posXF16 = toFloat16(posX);
+      const posYF16 = toFloat16(posY);
+      const posZF16 = toFloat16(posZ);
+
+      // Get quaternion (SOG stores octahedral-encoded in RGB, rotation in A)
+      // Map to Spark's octahedral format: XY in 2 bytes, rotation angle in 1 byte
+      const quatX = tiles.quats[pixelOffset + 0];
+      const quatY = tiles.quats[pixelOffset + 1];
+      const quatZ = tiles.quats[pixelOffset + 2];
+
+      // Get scales (already log-encoded in SOG)
+      const scaleX = tiles.scales[pixelOffset + 0];
+      const scaleY = tiles.scales[pixelOffset + 1];
+      const scaleZ = tiles.scales[pixelOffset + 2];
+
+      // Get color/opacity from sh0
+      const colorR = tiles.sh0[pixelOffset + 0];
+      const colorG = tiles.sh0[pixelOffset + 1];
+      const colorB = tiles.sh0[pixelOffset + 2];
+      const opacity = tiles.sh0[pixelOffset + 3];
+
+      // Pack into Spark's format
+      // Word 0: RGBA color
+      packed[packedOffset + 0] =
+        colorR | (colorG << 8) | (colorB << 16) | (opacity << 24);
+      // Word 1: center X,Y as float16
+      packed[packedOffset + 1] = posXF16 | (posYF16 << 16);
+      // Word 2: center Z float16 + quat XY
+      packed[packedOffset + 2] = posZF16 | (quatX << 16) | (quatY << 24);
+      // Word 3: scales + quat Z
+      packed[packedOffset + 3] =
+        scaleX | (scaleY << 8) | (scaleZ << 16) | (quatZ << 24);
+    }
+
+    this.needsUpdate = true;
+  }
+
+  /**
+   * Update directly from raw packed array data
+   * Fastest path when you already have Spark-format packed data
+   */
+  updateFromPackedArray(data: Uint32Array, numSplats?: number) {
+    if (!this.packedArray || this.packedArray.length < data.length) {
+      this.ensureSplats(data.length / 4);
+    }
+    this.packedArray?.set(data);
+    this.numSplats = numSplats ?? data.length / 4;
+    this.needsUpdate = true;
+  }
+}
+
+// Float16 conversion helper
+function toFloat16(value: number): number {
+  const floatView = new Float32Array(1);
+  const int32View = new Int32Array(floatView.buffer);
+  floatView[0] = value;
+  const f = int32View[0];
+
+  const sign = (f >> 16) & 0x8000;
+  const exponent = ((f >> 23) & 0xff) - 127 + 15;
+  const mantissa = f & 0x7fffff;
+
+  if (exponent <= 0) {
+    // Subnormal or zero
+    if (exponent < -10) return sign;
+    const m = (mantissa | 0x800000) >> (1 - exponent);
+    return sign | (m >> 13);
+  }
+  if (exponent >= 31) {
+    // Overflow to infinity
+    return sign | 0x7c00;
+  }
+  return sign | (exponent << 10) | (mantissa >> 13);
 }
 
 // You can use a PackedSplats as a dyno block using the function
