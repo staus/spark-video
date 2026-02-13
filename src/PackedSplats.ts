@@ -699,6 +699,9 @@ export class PackedSplats {
       renderer.setRenderTarget(this.target, layer);
       renderer.xr.enabled = false;
       renderer.autoClear = false;
+      // Clear integer framebuffer with proper WebGL2 call
+      const gl = renderer.getContext() as WebGL2RenderingContext;
+      gl.clearBufferuiv(gl.COLOR, 0, PackedSplats.clearValue);
       PackedSplats.fullScreenQuad.render(renderer);
 
       base += SPLAT_TEX_WIDTH * (layerYEnd - layerYStart);
@@ -712,6 +715,9 @@ export class PackedSplats {
 
   // Cache for GsplatGenerator programs
   static generatorProgram = new WeakMap<GsplatGenerator, DynoProgram>();
+
+  // Clear value for integer framebuffers
+  private static clearValue = new Uint32Array([0, 0, 0, 0]);
 
   // Static full-screen quad for pseudo-compute shader rendering
   static fullScreenQuad = new FullScreenQuad(
@@ -1087,6 +1093,9 @@ export class PackedSplats {
       renderer.setRenderTarget(this.target, layer);
       renderer.xr.enabled = false;
       renderer.autoClear = false;
+      // Clear integer framebuffer with proper WebGL2 call
+      const gl = renderer.getContext() as WebGL2RenderingContext;
+      gl.clearBufferuiv(gl.COLOR, 0, PackedSplats.clearValue);
       PackedSplats.fullScreenQuad.render(renderer);
     }
 

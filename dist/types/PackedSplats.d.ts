@@ -90,6 +90,7 @@ export declare class PackedSplats {
     };
     static programTemplate: DynoProgramTemplate | null;
     static generatorProgram: WeakMap<GsplatGenerator, DynoProgram>;
+    private static clearValue;
     static fullScreenQuad: FullScreenQuad;
     /**
      * Pre-computed video mode data for fast frame updates

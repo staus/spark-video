@@ -10,6 +10,7 @@ export { SplatGenerator, type GsplatGenerator, SplatModifier, type GsplatModifie
 export { SplatAccumulator, type GeneratorMapping } from './SplatAccumulator';
 export { Readback, type Rgba8Readback, type ReadbackBuffer } from './Readback';
 export { SplatMesh, type SplatMeshOptions, type SplatMeshContext, } from './SplatMesh';
+export { VideoSplatMesh, type Video4DGSMetadata } from './VideoSplatMesh';
 export { SplatSkinning, type SplatSkinningOptions } from './SplatSkinning';
 export { SplatEdit, type SplatEditOptions, SplatEditSdf, type SplatEditSdfOptions, SplatEditSdfType, SplatEditRgbaBlendMode, SplatEdits, } from './SplatEdit';
 export { constructGrid, constructAxes, constructSpherePoints, imageSplats, textSplats, } from './splatConstructors';
