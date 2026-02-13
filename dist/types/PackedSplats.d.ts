@@ -91,7 +91,46 @@ export declare class PackedSplats {
     static programTemplate: DynoProgramTemplate | null;
     static generatorProgram: WeakMap<GsplatGenerator, DynoProgram>;
     static fullScreenQuad: FullScreenQuad;
+    /**
+     * Pre-computed video mode data for fast frame updates
+     */
+    private videoModeData;
+    /**
+     * Initialize for video frame updates with full SOG metadata
+     * Pre-computes all lookup tables for maximum frame update performance
+     */
+    initVideoMode(metadata: SOGVideoMetadata): void;
+    /**
+     * Update splat data from SOG-format video tiles (optimized path)
+     * Uses pre-computed lookup tables for maximum performance
+     */
+    updateFromVideoTiles(tiles: SOGVideoTiles): void;
+    /**
+     * Update directly from raw packed array data
+     * Fastest path when data is already in Spark format
+     */
+    updateFromPackedArray(data: Uint32Array, numSplats?: number): void;
 }
+/**
+ * SOG video metadata for initializing video mode
+ */
+export type SOGVideoMetadata = {
+    count: number;
+    mins: [number, number, number];
+    maxs: [number, number, number];
+    scaleCodebook: number[];
+    sh0Codebook: number[];
+};
+/**
+ * SOG video tile data from a single frame
+ */
+export type SOGVideoTiles = {
+    means_l: Uint8ClampedArray;
+    means_u: Uint8ClampedArray;
+    quats: Uint8ClampedArray;
+    scales: Uint8ClampedArray;
+    sh0: Uint8ClampedArray;
+};
 export declare const dynoPackedSplats: (packedSplats?: PackedSplats) => DynoPackedSplats;
 export declare class DynoPackedSplats extends DynoUniform<typeof TPackedSplats, "packedSplats", {
     texture: THREE.DataArrayTexture;
