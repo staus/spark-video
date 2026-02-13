@@ -83,7 +83,7 @@ export declare class VideoSplatMesh extends SplatMesh {
     play(): void;
     pause(): void;
     toggle(): void;
-    seekToFrame(frame: number): void;
+    seekToFrame(frame: number, renderer?: THREE.WebGLRenderer): void;
     getTotalFrames(): number;
     getFPS(): number;
     dispose(): void;

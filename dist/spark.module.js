@@ -12489,11 +12489,25 @@ class VideoSplatMesh extends SplatMesh {
       this.play();
     }
   }
-  seekToFrame(frame) {
+  seekToFrame(frame, renderer) {
     this.currentFrameIndex = Math.max(0, Math.min(frame, this.totalFrames - 1));
     this.drawFrame(this.currentFrameIndex);
-    if (this.canvasTexture) {
+    if (this.canvasTexture && this.tileUVs) {
       this.canvasTexture.needsUpdate = true;
+      if (renderer) {
+        renderer.initTexture(this.canvasTexture);
+        this.packedSplats.updateFromVideoTextureGPU(
+          renderer,
+          this.canvasTexture,
+          this.tileUVs,
+          this.videoWidth,
+          this.videoHeight
+        );
+        this.needsUpdate = true;
+      }
+    }
+    if (this.onFrameChange) {
+      this.onFrameChange(this.currentFrameIndex, this.totalFrames);
     }
   }
   getTotalFrames() {

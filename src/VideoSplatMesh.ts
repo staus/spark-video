@@ -342,11 +342,30 @@ export class VideoSplatMesh extends SplatMesh {
     }
   }
 
-  seekToFrame(frame: number) {
+  seekToFrame(frame: number, renderer?: THREE.WebGLRenderer) {
     this.currentFrameIndex = Math.max(0, Math.min(frame, this.totalFrames - 1));
     this.drawFrame(this.currentFrameIndex);
-    if (this.canvasTexture) {
+
+    if (this.canvasTexture && this.tileUVs) {
       this.canvasTexture.needsUpdate = true;
+
+      // GPU decode the frame if renderer is provided
+      if (renderer) {
+        renderer.initTexture(this.canvasTexture);
+        this.packedSplats.updateFromVideoTextureGPU(
+          renderer,
+          this.canvasTexture,
+          this.tileUVs,
+          this.videoWidth,
+          this.videoHeight,
+        );
+        this.needsUpdate = true;
+      }
+    }
+
+    // Notify callback
+    if (this.onFrameChange) {
+      this.onFrameChange(this.currentFrameIndex, this.totalFrames);
     }
   }
 
