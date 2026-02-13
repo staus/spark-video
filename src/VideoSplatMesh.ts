@@ -295,8 +295,8 @@ export class VideoSplatMesh extends SplatMesh {
       this.videoHeight,
     );
 
-    // Trigger SparkRenderer regeneration
-    this.needsUpdate = true;
+    // Trigger SparkRenderer regeneration by incrementing version
+    this.updateVersion();
 
     // Notify callback
     if (this.onFrameChange) {
@@ -321,7 +321,7 @@ export class VideoSplatMesh extends SplatMesh {
       this.videoWidth,
       this.videoHeight,
     );
-    this.needsUpdate = true;
+    this.updateVersion();
   }
 
   play() {
@@ -359,7 +359,7 @@ export class VideoSplatMesh extends SplatMesh {
           this.videoWidth,
           this.videoHeight,
         );
-        this.needsUpdate = true;
+        this.updateVersion();
       }
     }
 

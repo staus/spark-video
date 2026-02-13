@@ -12452,7 +12452,7 @@ class VideoSplatMesh extends SplatMesh {
       this.videoWidth,
       this.videoHeight
     );
-    this.needsUpdate = true;
+    this.updateVersion();
     if (this.onFrameChange) {
       this.onFrameChange(this.currentFrameIndex, this.totalFrames);
     }
@@ -12472,7 +12472,7 @@ class VideoSplatMesh extends SplatMesh {
       this.videoWidth,
       this.videoHeight
     );
-    this.needsUpdate = true;
+    this.updateVersion();
   }
   play() {
     this.isPlaying = true;
@@ -12503,7 +12503,7 @@ class VideoSplatMesh extends SplatMesh {
           this.videoWidth,
           this.videoHeight
         );
-        this.needsUpdate = true;
+        this.updateVersion();
       }
     }
     if (this.onFrameChange) {
