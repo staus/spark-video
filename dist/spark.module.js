@@ -12465,13 +12465,25 @@ class VideoSplatMesh extends SplatMesh {
     }
   }
   /**
-   * Get the gaussian count for a specific frame
+   * Decode a frame to GPU. Single path for all frame updates.
    */
-  getFrameSplatCount(frameIndex) {
-    if (this.frameGaussianCounts && frameIndex < this.frameGaussianCounts.length) {
-      return this.frameGaussianCounts[frameIndex];
-    }
-    return this.staticCount;
+  decodeFrame(renderer, frameIndex) {
+    var _a2, _b2;
+    if (!this.frameTexture || !this.tileUVs) return;
+    this.updateFrameTexture(frameIndex);
+    const count = ((_a2 = this.frameGaussianCounts) == null ? void 0 : _a2[frameIndex]) ?? this.staticCount;
+    this.packedSplats.updateVideoSplatCount(count);
+    this.numSplats = count;
+    renderer.initTexture(this.frameTexture);
+    this.packedSplats.updateFromVideoTextureGPU(
+      renderer,
+      this.frameTexture,
+      this.tileUVs,
+      this.videoWidth,
+      this.videoHeight
+    );
+    this.updateVersion();
+    (_b2 = this.onFrameChange) == null ? void 0 : _b2.call(this, this.currentFrameIndex, this.totalFrames);
   }
   /**
    * Call each frame from the render loop.
@@ -12493,73 +12505,14 @@ class VideoSplatMesh extends SplatMesh {
     }
     this.accumulatedTime -= this.frameInterval;
     this.currentFrameIndex = (this.currentFrameIndex + 1) % this.totalFrames;
-    this.updateFrameTexture(this.currentFrameIndex);
-    const frameCount = this.getFrameSplatCount(this.currentFrameIndex);
-    this.packedSplats.updateVideoSplatCount(frameCount);
-    this.numSplats = frameCount;
-    renderer.initTexture(this.frameTexture);
-    this.packedSplats.updateFromVideoTextureGPU(
-      renderer,
-      this.frameTexture,
-      this.tileUVs,
-      this.videoWidth,
-      this.videoHeight
-    );
-    const gl = renderer.getContext();
-    gl.flush();
-    this.updateVersion();
-    this.triggerImmediateRegeneration(renderer);
-    if (this.onFrameChange) {
-      this.onFrameChange(this.currentFrameIndex, this.totalFrames);
-    }
+    this.decodeFrame(renderer, this.currentFrameIndex);
     return true;
   }
   /**
-   * Find SparkRenderer in scene and trigger immediate regeneration
-   */
-  triggerImmediateRegeneration(_renderer) {
-    let current = this;
-    while (current && !(current instanceof THREE.Scene)) {
-      current = current.parent;
-    }
-    if (!current) return;
-    const scene = current;
-    let spark = null;
-    scene.traverse((node) => {
-      if (node instanceof SparkRenderer) {
-        spark = node;
-      }
-    });
-    if (spark) {
-      const sr = spark;
-      sr.needsUpdate = true;
-      const savedPreUpdate = sr.preUpdate;
-      sr.preUpdate = true;
-      sr.update({ scene, viewToWorld: sr.defaultView.viewToWorld });
-      sr.preUpdate = savedPreUpdate;
-    }
-  }
-  /**
    * Decode first frame without starting playback.
-   * Call after loadVideo() to show initial frame.
    */
   decodeFirstFrame(renderer) {
-    if (!this.frameTexture || !this.tileUVs) return;
-    const frameCount = this.getFrameSplatCount(0);
-    this.packedSplats.updateVideoSplatCount(frameCount);
-    this.numSplats = frameCount;
-    renderer.initTexture(this.frameTexture);
-    this.packedSplats.updateFromVideoTextureGPU(
-      renderer,
-      this.frameTexture,
-      this.tileUVs,
-      this.videoWidth,
-      this.videoHeight
-    );
-    const gl = renderer.getContext();
-    gl.flush();
-    this.updateVersion();
-    this.triggerImmediateRegeneration(renderer);
+    this.decodeFrame(renderer, 0);
   }
   play() {
     this.isPlaying = true;
@@ -12577,30 +12530,8 @@ class VideoSplatMesh extends SplatMesh {
     }
   }
   seekToFrame(frame, renderer) {
-    this.currentFrameIndex = Math.max(0, Math.min(frame, this.totalFrames - 1));
-    this.updateFrameTexture(this.currentFrameIndex);
-    const frameCount = this.getFrameSplatCount(this.currentFrameIndex);
-    this.packedSplats.updateVideoSplatCount(frameCount);
-    this.numSplats = frameCount;
-    if (this.frameTexture && this.tileUVs) {
-      if (renderer) {
-        renderer.initTexture(this.frameTexture);
-        this.packedSplats.updateFromVideoTextureGPU(
-          renderer,
-          this.frameTexture,
-          this.tileUVs,
-          this.videoWidth,
-          this.videoHeight
-        );
-        const gl = renderer.getContext();
-        gl.flush();
-        this.updateVersion();
-        this.triggerImmediateRegeneration(renderer);
-      }
-    }
-    if (this.onFrameChange) {
-      this.onFrameChange(this.currentFrameIndex, this.totalFrames);
-    }
+    const frameIndex = Math.max(0, Math.min(frame, this.totalFrames - 1));
+    this.decodeFrame(renderer, frameIndex);
   }
   getTotalFrames() {
     return this.totalFrames;

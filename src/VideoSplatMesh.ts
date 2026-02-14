@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import type { GPUVideoTileUVs, SOGVideoMetadata } from "./PackedSplats";
-import { SparkRenderer } from "./SparkRenderer";
 import { SplatMesh, type SplatMeshOptions } from "./SplatMesh";
 
 // WebCodecs ImageDecoder API types (not yet in lib.dom.d.ts)
@@ -264,16 +263,28 @@ export class VideoSplatMesh extends SplatMesh {
   }
 
   /**
-   * Get the gaussian count for a specific frame
+   * Decode a frame to GPU. Single path for all frame updates.
    */
-  private getFrameSplatCount(frameIndex: number): number {
-    if (
-      this.frameGaussianCounts &&
-      frameIndex < this.frameGaussianCounts.length
-    ) {
-      return this.frameGaussianCounts[frameIndex];
-    }
-    return this.staticCount;
+  private decodeFrame(renderer: THREE.WebGLRenderer, frameIndex: number) {
+    if (!this.frameTexture || !this.tileUVs) return;
+
+    this.updateFrameTexture(frameIndex);
+
+    const count = this.frameGaussianCounts?.[frameIndex] ?? this.staticCount;
+    this.packedSplats.updateVideoSplatCount(count);
+    this.numSplats = count;
+
+    renderer.initTexture(this.frameTexture);
+    this.packedSplats.updateFromVideoTextureGPU(
+      renderer,
+      this.frameTexture,
+      this.tileUVs,
+      this.videoWidth,
+      this.videoHeight,
+    );
+
+    this.updateVersion();
+    this.onFrameChange?.(this.currentFrameIndex, this.totalFrames);
   }
 
   /**
@@ -288,7 +299,6 @@ export class VideoSplatMesh extends SplatMesh {
       return false;
     }
 
-    // Initialize timing on first tick
     if (this.lastFrameTime === 0) {
       this.lastFrameTime = now;
       this.accumulatedTime = 0;
@@ -298,113 +308,22 @@ export class VideoSplatMesh extends SplatMesh {
     this.lastFrameTime = now;
     this.accumulatedTime += deltaTime;
 
-    // Check if it's time for a new frame
     if (this.accumulatedTime < this.frameInterval) {
       return false;
     }
 
     this.accumulatedTime -= this.frameInterval;
-
-    // Advance to next frame
     this.currentFrameIndex = (this.currentFrameIndex + 1) % this.totalFrames;
-
-    // Update texture with new frame
-    this.updateFrameTexture(this.currentFrameIndex);
-
-    // Update splat count for this frame (handles varying gaussian counts per frame)
-    const frameCount = this.getFrameSplatCount(this.currentFrameIndex);
-    this.packedSplats.updateVideoSplatCount(frameCount);
-    this.numSplats = frameCount;
-
-    // Upload texture to GPU
-    renderer.initTexture(this.frameTexture);
-
-    // GPU decode: video texture -> packed splats
-    this.packedSplats.updateFromVideoTextureGPU(
-      renderer,
-      this.frameTexture,
-      this.tileUVs,
-      this.videoWidth,
-      this.videoHeight,
-    );
-
-    // Flush GPU to ensure decode completes before reading
-    const gl = renderer.getContext() as WebGL2RenderingContext;
-    gl.flush();
-
-    // Trigger SparkRenderer regeneration by incrementing version
-    this.updateVersion();
-
-    // Force immediate regeneration by finding SparkRenderer and triggering sync update
-    this.triggerImmediateRegeneration(renderer);
-
-    // Notify callback
-    if (this.onFrameChange) {
-      this.onFrameChange(this.currentFrameIndex, this.totalFrames);
-    }
+    this.decodeFrame(renderer, this.currentFrameIndex);
 
     return true;
   }
 
   /**
-   * Find SparkRenderer in scene and trigger immediate regeneration
-   */
-  private triggerImmediateRegeneration(_renderer: THREE.WebGLRenderer) {
-    // Walk up to find the scene
-    let current: THREE.Object3D | null = this as THREE.Object3D;
-    while (current && !(current instanceof THREE.Scene)) {
-      current = current.parent;
-    }
-    if (!current) return;
-
-    const scene = current as THREE.Scene;
-
-    // Find SparkRenderer in the scene
-    let spark: SparkRenderer | null = null;
-    scene.traverse((node) => {
-      if (node instanceof SparkRenderer) {
-        spark = node;
-      }
-    });
-
-    if (spark) {
-      const sr = spark as SparkRenderer;
-      // Force synchronous update by setting needsUpdate and preUpdate
-      sr.needsUpdate = true;
-      const savedPreUpdate = sr.preUpdate;
-      sr.preUpdate = true;
-      sr.update({ scene, viewToWorld: sr.defaultView.viewToWorld });
-      sr.preUpdate = savedPreUpdate;
-    }
-  }
-
-  /**
    * Decode first frame without starting playback.
-   * Call after loadVideo() to show initial frame.
    */
   decodeFirstFrame(renderer: THREE.WebGLRenderer) {
-    if (!this.frameTexture || !this.tileUVs) return;
-
-    // Update splat count for first frame
-    const frameCount = this.getFrameSplatCount(0);
-    this.packedSplats.updateVideoSplatCount(frameCount);
-    this.numSplats = frameCount;
-
-    renderer.initTexture(this.frameTexture);
-    this.packedSplats.updateFromVideoTextureGPU(
-      renderer,
-      this.frameTexture,
-      this.tileUVs,
-      this.videoWidth,
-      this.videoHeight,
-    );
-
-    // Flush GPU to ensure decode completes
-    const gl = renderer.getContext() as WebGL2RenderingContext;
-    gl.flush();
-
-    this.updateVersion();
-    this.triggerImmediateRegeneration(renderer);
+    this.decodeFrame(renderer, 0);
   }
 
   play() {
@@ -425,40 +344,9 @@ export class VideoSplatMesh extends SplatMesh {
     }
   }
 
-  seekToFrame(frame: number, renderer?: THREE.WebGLRenderer) {
-    this.currentFrameIndex = Math.max(0, Math.min(frame, this.totalFrames - 1));
-    this.updateFrameTexture(this.currentFrameIndex);
-
-    // Update splat count for this frame
-    const frameCount = this.getFrameSplatCount(this.currentFrameIndex);
-    this.packedSplats.updateVideoSplatCount(frameCount);
-    this.numSplats = frameCount;
-
-    if (this.frameTexture && this.tileUVs) {
-      // GPU decode the frame if renderer is provided
-      if (renderer) {
-        renderer.initTexture(this.frameTexture);
-        this.packedSplats.updateFromVideoTextureGPU(
-          renderer,
-          this.frameTexture,
-          this.tileUVs,
-          this.videoWidth,
-          this.videoHeight,
-        );
-
-        // Flush GPU to ensure decode completes
-        const gl = renderer.getContext() as WebGL2RenderingContext;
-        gl.flush();
-
-        this.updateVersion();
-        this.triggerImmediateRegeneration(renderer);
-      }
-    }
-
-    // Notify callback
-    if (this.onFrameChange) {
-      this.onFrameChange(this.currentFrameIndex, this.totalFrames);
-    }
+  seekToFrame(frame: number, renderer: THREE.WebGLRenderer) {
+    const frameIndex = Math.max(0, Math.min(frame, this.totalFrames - 1));
+    this.decodeFrame(renderer, frameIndex);
   }
 
   getTotalFrames(): number {

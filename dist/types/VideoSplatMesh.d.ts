@@ -80,27 +80,22 @@ export declare class VideoSplatMesh extends SplatMesh {
      */
     private updateFrameTexture;
     /**
-     * Get the gaussian count for a specific frame
+     * Decode a frame to GPU. Single path for all frame updates.
      */
-    private getFrameSplatCount;
+    private decodeFrame;
     /**
      * Call each frame from the render loop.
      * Returns true if a new frame was decoded.
      */
     tick(renderer: THREE.WebGLRenderer, now?: number): boolean;
     /**
-     * Find SparkRenderer in scene and trigger immediate regeneration
-     */
-    private triggerImmediateRegeneration;
-    /**
      * Decode first frame without starting playback.
-     * Call after loadVideo() to show initial frame.
      */
     decodeFirstFrame(renderer: THREE.WebGLRenderer): void;
     play(): void;
     pause(): void;
     toggle(): void;
-    seekToFrame(frame: number, renderer?: THREE.WebGLRenderer): void;
+    seekToFrame(frame: number, renderer: THREE.WebGLRenderer): void;
     getTotalFrames(): number;
     getFPS(): number;
     dispose(): void;
