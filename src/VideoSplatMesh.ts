@@ -42,9 +42,10 @@ export interface Video4DGSMetadata {
   };
   sog: {
     count: number;
-    bounds: {
-      min: [number, number, number];
-      max: [number, number, number];
+    // Bounds from SOG encoder (means.mins/maxs format)
+    means?: {
+      mins: [number, number, number];
+      maxs: [number, number, number];
     };
     scales: {
       codebook: number[];
@@ -192,11 +193,15 @@ export class VideoSplatMesh extends SplatMesh {
       this.frameGaussianCounts = metadata["4dgs"].frame_gaussian_counts;
     }
 
+    // Extract position bounds from SOG means metadata
+    const positionMins = metadata.sog.means?.mins ?? [0, 0, 0];
+    const positionMaxs = metadata.sog.means?.maxs ?? [1, 1, 1];
+
     // Initialize GPU video mode in PackedSplats
     const sparkMetadata: SOGVideoMetadata = {
       count: metadata.sog.count,
-      mins: metadata.sog.bounds.min,
-      maxs: metadata.sog.bounds.max,
+      mins: positionMins,
+      maxs: positionMaxs,
       scaleCodebook: metadata.sog.scales.codebook,
       sh0Codebook: metadata.sog.sh0.codebook,
     };
@@ -208,8 +213,8 @@ export class VideoSplatMesh extends SplatMesh {
     const lnScaleMin = Math.min(...scaleCodebook);
     const lnScaleMax = Math.max(...scaleCodebook);
     this.validationMetadata = {
-      positionMins: metadata.sog.bounds.min,
-      positionMaxs: metadata.sog.bounds.max,
+      positionMins,
+      positionMaxs,
       scaleCodebook: scaleCodebook,
       sh0Codebook: metadata.sog.sh0.codebook,
       lnScaleMin,
