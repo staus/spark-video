@@ -12,9 +12,9 @@ export interface Video4DGSMetadata {
     };
     sog: {
         count: number;
-        means: {
-            mins: [number, number, number];
-            maxs: [number, number, number];
+        bounds: {
+            min: [number, number, number];
+            max: [number, number, number];
         };
         scales: {
             codebook: number[];

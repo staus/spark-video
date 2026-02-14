@@ -12388,8 +12388,8 @@ class VideoSplatMesh extends SplatMesh {
     this.createTexture();
     const sparkMetadata = {
       count: metadata.sog.count,
-      mins: metadata.sog.means.mins,
-      maxs: metadata.sog.means.maxs,
+      mins: metadata.sog.bounds.min,
+      maxs: metadata.sog.bounds.max,
       scaleCodebook: metadata.sog.scales.codebook,
       sh0Codebook: metadata.sog.sh0.codebook
     };

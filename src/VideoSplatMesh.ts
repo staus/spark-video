@@ -43,9 +43,9 @@ export interface Video4DGSMetadata {
   };
   sog: {
     count: number;
-    means: {
-      mins: [number, number, number];
-      maxs: [number, number, number];
+    bounds: {
+      min: [number, number, number];
+      max: [number, number, number];
     };
     scales: {
       codebook: number[];
@@ -198,8 +198,8 @@ export class VideoSplatMesh extends SplatMesh {
     // Initialize GPU video mode in PackedSplats
     const sparkMetadata: SOGVideoMetadata = {
       count: metadata.sog.count,
-      mins: metadata.sog.means.mins,
-      maxs: metadata.sog.means.maxs,
+      mins: metadata.sog.bounds.min,
+      maxs: metadata.sog.bounds.max,
       scaleCodebook: metadata.sog.scales.codebook,
       sh0Codebook: metadata.sog.sh0.codebook,
     };
