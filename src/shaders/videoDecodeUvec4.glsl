@@ -10,9 +10,11 @@ uniform uint targetLayer;
 uniform int targetBase;
 uniform int targetCount;
 
-// Video texture (combined frame with all tiles)
-uniform sampler2D videoTexture;
-uniform vec2 videoSize;  // Width, height of video frame
+// Video textures (combined frame with all tiles)
+uniform sampler2D videoTexture;   // Frame A (primary)
+uniform sampler2D videoTextureB;  // Frame B (for interpolation)
+uniform float interpAlpha;        // Interpolation factor (0 = A only, 1 = B only)
+uniform vec2 videoSize;           // Width, height of video frame
 
 // Tile layout - each vec4 contains (u0, v0, u1, v1) for the tile
 uniform vec4 tileUV_means_l;
@@ -45,8 +47,8 @@ out uvec4 target;
 const float SQRT2 = 1.41421356237;
 const float SH_C0 = 0.28209479177387814;
 
-// Sample a tile at the given splat index
-vec4 sampleTile(vec4 tileUV, int splatIndex) {
+// Sample a tile at the given splat index from a specific texture
+vec4 sampleTileFrom(sampler2D tex, vec4 tileUV, int splatIndex) {
     // Calculate which pixel in the tile this splat maps to
     int tileSizeInt = int(tileSize);
     int tileX = splatIndex % tileSizeInt;
@@ -62,13 +64,40 @@ vec4 sampleTile(vec4 tileUV, int splatIndex) {
     // Tile UVs are calculated in top-left origin, which matches directly
     // No V-flip needed
 
-    return texture(videoTexture, vec2(u, v));
+    return texture(tex, vec2(u, v));
 }
 
-// Decode position from means_l and means_u tiles
-vec3 decodePosition(int splatIndex) {
-    vec4 meansL = sampleTile(tileUV_means_l, splatIndex);
-    vec4 meansU = sampleTile(tileUV_means_u, splatIndex);
+// Sample a tile from primary texture (backwards compatibility)
+vec4 sampleTile(vec4 tileUV, int splatIndex) {
+    return sampleTileFrom(videoTexture, tileUV, splatIndex);
+}
+
+// Spherical linear interpolation for quaternions
+vec4 slerp(vec4 qa, vec4 qb, float t) {
+    // Handle opposite hemisphere
+    float cosHalfTheta = dot(qa, qb);
+    if (cosHalfTheta < 0.0) {
+        qb = -qb;
+        cosHalfTheta = -cosHalfTheta;
+    }
+
+    // If quaternions are nearly parallel, use linear interpolation
+    if (cosHalfTheta > 0.9999) {
+        return normalize(mix(qa, qb, t));
+    }
+
+    // Standard slerp
+    float halfTheta = acos(cosHalfTheta);
+    float sinHalfTheta = sqrt(1.0 - cosHalfTheta * cosHalfTheta);
+    float ratioA = sin((1.0 - t) * halfTheta) / sinHalfTheta;
+    float ratioB = sin(t * halfTheta) / sinHalfTheta;
+    return qa * ratioA + qb * ratioB;
+}
+
+// Decode position from means_l and means_u tiles (from specific texture)
+vec3 decodePositionFrom(sampler2D tex, int splatIndex) {
+    vec4 meansL = sampleTileFrom(tex, tileUV_means_l, splatIndex);
+    vec4 meansU = sampleTileFrom(tex, tileUV_means_u, splatIndex);
 
     // Combine low and high bytes to get uint16 values (0-65535 range)
     // Texture samples are raw bytes normalized to 0-1, multiply by 255 to recover original bytes
@@ -93,9 +122,14 @@ vec3 decodePosition(int splatIndex) {
     return pos;
 }
 
-// Decode quaternion from quats tile (smallest-three format)
-vec4 decodeQuaternion(int splatIndex) {
-    vec4 quatsRaw = sampleTile(tileUV_quats, splatIndex);
+// Decode position from primary texture (backwards compatibility)
+vec3 decodePosition(int splatIndex) {
+    return decodePositionFrom(videoTexture, splatIndex);
+}
+
+// Decode quaternion from quats tile (smallest-three format, from specific texture)
+vec4 decodeQuaternionFrom(sampler2D tex, int splatIndex) {
+    vec4 quatsRaw = sampleTileFrom(tex, tileUV_quats, splatIndex);
 
     // Get uint8 values
     float qr = floor(quatsRaw.r * 255.0 + 0.5);
@@ -115,10 +149,6 @@ vec4 decodeQuaternion(int splatIndex) {
     int rOrder = int(qa) - 252;
 
     // Reconstruct quaternion based on which component was dropped
-    // CPU reference: qx = rOrder===0 ? r0 : rOrder===1 ? rr : r1
-    //                qy = rOrder<=1 ? r1 : rOrder===2 ? rr : r2
-    //                qz = rOrder<=2 ? r2 : rr
-    //                qw = rOrder===0 ? rr : r0
     vec4 quat;
     if (rOrder == 0) {
         quat = vec4(r0, r1, r2, rr);  // w was largest
@@ -133,9 +163,14 @@ vec4 decodeQuaternion(int splatIndex) {
     return normalize(quat);
 }
 
-// Decode scales from codebook lookup
-vec3 decodeScales(int splatIndex) {
-    vec4 scalesRaw = sampleTile(tileUV_scales, splatIndex);
+// Decode quaternion from primary texture (backwards compatibility)
+vec4 decodeQuaternion(int splatIndex) {
+    return decodeQuaternionFrom(videoTexture, splatIndex);
+}
+
+// Decode scales from codebook lookup (from specific texture)
+vec3 decodeScalesFrom(sampler2D tex, int splatIndex) {
+    vec4 scalesRaw = sampleTileFrom(tex, tileUV_scales, splatIndex);
 
     // Get codebook indices as uint8
     float idxX = floor(scalesRaw.r * 255.0 + 0.5);
@@ -151,9 +186,14 @@ vec3 decodeScales(int splatIndex) {
     return vec3(exp(logScaleX), exp(logScaleY), exp(logScaleZ));
 }
 
-// Decode color and opacity from sh0 tile and codebook
-vec4 decodeRGBA(int splatIndex) {
-    vec4 sh0Raw = sampleTile(tileUV_sh0, splatIndex);
+// Decode scales from primary texture (backwards compatibility)
+vec3 decodeScales(int splatIndex) {
+    return decodeScalesFrom(videoTexture, splatIndex);
+}
+
+// Decode color and opacity from sh0 tile and codebook (from specific texture)
+vec4 decodeRGBAFrom(sampler2D tex, int splatIndex) {
+    vec4 sh0Raw = sampleTileFrom(tex, tileUV_sh0, splatIndex);
 
     // Get codebook indices as uint8
     float idxR = floor(sh0Raw.r * 255.0 + 0.5);
@@ -176,6 +216,11 @@ vec4 decodeRGBA(int splatIndex) {
     return vec4(clamp(colorR, 0.0, 1.0), clamp(colorG, 0.0, 1.0), clamp(colorB, 0.0, 1.0), opacity);
 }
 
+// Decode color/opacity from primary texture (backwards compatibility)
+vec4 decodeRGBA(int splatIndex) {
+    return decodeRGBAFrom(videoTexture, splatIndex);
+}
+
 void main() {
     // Calculate which splat this fragment corresponds to
     int targetIndex = int(targetLayer << SPLAT_TEX_LAYER_BITS) +
@@ -184,11 +229,35 @@ void main() {
     int splatIndex = targetIndex - targetBase;
 
     if (splatIndex >= 0 && splatIndex < targetCount && splatIndex < splatCount) {
-        // Decode all splat attributes from video tiles
-        vec3 center = decodePosition(splatIndex);
-        vec4 quaternion = decodeQuaternion(splatIndex);
-        vec3 scales = decodeScales(splatIndex);
-        vec4 rgba = decodeRGBA(splatIndex);
+        vec3 center;
+        vec4 quaternion;
+        vec3 scales;
+        vec4 rgba;
+
+        if (interpAlpha > 0.0) {
+            // Dual-texture interpolation mode
+            // Decode from both textures
+            vec3 centerA = decodePositionFrom(videoTexture, splatIndex);
+            vec3 centerB = decodePositionFrom(videoTextureB, splatIndex);
+            vec4 quatA = decodeQuaternionFrom(videoTexture, splatIndex);
+            vec4 quatB = decodeQuaternionFrom(videoTextureB, splatIndex);
+            vec3 scalesA = decodeScalesFrom(videoTexture, splatIndex);
+            vec3 scalesB = decodeScalesFrom(videoTextureB, splatIndex);
+            vec4 rgbaA = decodeRGBAFrom(videoTexture, splatIndex);
+            vec4 rgbaB = decodeRGBAFrom(videoTextureB, splatIndex);
+
+            // Interpolate attributes
+            center = mix(centerA, centerB, interpAlpha);
+            quaternion = slerp(quatA, quatB, interpAlpha);
+            scales = mix(scalesA, scalesB, interpAlpha);
+            rgba = mix(rgbaA, rgbaB, interpAlpha);
+        } else {
+            // Single-texture mode (original behavior)
+            center = decodePosition(splatIndex);
+            quaternion = decodeQuaternion(splatIndex);
+            scales = decodeScales(splatIndex);
+            rgba = decodeRGBA(splatIndex);
+        }
 
         // Pack into Spark's uvec4 format using dynamic encoding range
         target = packSplatEncoding(center, scales, quaternion, rgba, rgbMinMaxLnScaleMinMax);

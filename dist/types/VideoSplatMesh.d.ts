@@ -9,6 +9,8 @@ export interface Video4DGSMetadata {
     video: {
         frames: number;
         fps: number;
+        source_duration?: number;
+        source_fps?: number;
     };
     sog: {
         count: number;
@@ -25,6 +27,7 @@ export interface Video4DGSMetadata {
     };
     "4dgs"?: {
         frame_gaussian_counts?: number[];
+        frame_times?: number[];
     };
 }
 /**
@@ -54,6 +57,12 @@ export declare class VideoSplatMesh extends SplatMesh {
     private videoWidth;
     private videoHeight;
     private frameTexture;
+    private frameTextureA;
+    private frameTextureB;
+    private glTextureA;
+    private glTextureB;
+    private currentFrameA;
+    private currentFrameB;
     private tileUVs;
     private frameGaussianCounts;
     private staticCount;
@@ -62,7 +71,14 @@ export declare class VideoSplatMesh extends SplatMesh {
     isPlaying: boolean;
     private lastFrameTime;
     private accumulatedTime;
+    interpolationEnabled: boolean;
+    private sourceDuration;
+    private frameTimes;
+    private currentPlaybackTime;
+    interpAlpha: number;
     onFrameChange: ((frameIndex: number, totalFrames: number) => void) | null;
+    onInterpolationUpdate: ((alpha: number, frameA: number, frameB: number, time: number) => void) | null;
+    onTimeChange: ((currentTime: number, totalDuration: number) => void) | null;
     constructor(options?: SplatMeshOptions);
     /**
      * Check if ImageDecoder API is available
@@ -102,6 +118,26 @@ export declare class VideoSplatMesh extends SplatMesh {
     seekToFrame(frame: number, renderer: THREE.WebGLRenderer): void;
     getTotalFrames(): number;
     getFPS(): number;
+    getSourceDuration(): number;
+    getPlaybackTime(): number;
+    /**
+     * Upload a frame to texture A for dual-frame interpolation.
+     */
+    private uploadFrameToTextureA;
+    /**
+     * Upload a frame to texture B for dual-frame interpolation.
+     */
+    private uploadFrameToTextureB;
+    /**
+     * Interpolated tick - advances playback time and decodes interpolated frames.
+     * Uses source_duration for correct timing instead of frame-based stepping.
+     * Returns true if the display was updated.
+     */
+    tickInterpolated(renderer: THREE.WebGLRenderer, now?: number): boolean;
+    /**
+     * Seek to a specific time in seconds.
+     */
+    seekToTime(timeSeconds: number, renderer: THREE.WebGLRenderer): void;
     /**
      * Validate the decode pipeline by reading back raw pixels and decoded splat data.
      * Traces through ALL shader math step-by-step with actual codebook values.

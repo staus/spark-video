@@ -987,6 +987,8 @@ export class PackedSplats {
         targetBase: { value: 0 },
         targetCount: { value: metadata.count },
         videoTexture: { value: null },
+        videoTextureB: { value: null }, // Second texture for interpolation
+        interpAlpha: { value: 0.0 }, // Interpolation factor (0 = A only, >0 = blend)
         videoSize: { value: new THREE.Vector2(0, 0) },
         tileUV_means_l: { value: new THREE.Vector4(0, 0, 0, 0) },
         tileUV_means_u: { value: new THREE.Vector4(0, 0, 0, 0) },
@@ -1111,6 +1113,97 @@ export class PackedSplats {
       renderer.xr.enabled = false;
       renderer.autoClear = false;
       // Clear integer framebuffer with proper WebGL2 call
+      const gl = renderer.getContext() as WebGL2RenderingContext;
+      gl.clearBufferuiv(gl.COLOR, 0, PackedSplats.clearValue);
+      PackedSplats.fullScreenQuad.render(renderer);
+    }
+
+    this.resetRenderState(renderer, renderState);
+  }
+
+  /**
+   * Update splat data from two video textures with interpolation.
+   * Blends between frame A and frame B based on interpAlpha (0-1).
+   * Used for smooth playback between keyframes.
+   */
+  updateFromDualVideoTextureGPU(
+    renderer: THREE.WebGLRenderer,
+    videoTextureA: THREE.Texture,
+    videoTextureB: THREE.Texture,
+    interpAlpha: number,
+    tileUVs: GPUVideoTileUVs,
+    videoWidth: number,
+    videoHeight: number,
+  ) {
+    if (!this.gpuVideoModeData) {
+      throw new Error("Call initVideoModeGPU() first");
+    }
+    if (!this.target) {
+      throw new Error("Render target not initialized");
+    }
+
+    const { material, count, tileSize } = this.gpuVideoModeData;
+
+    // Update uniforms for dual-texture interpolation
+    material.uniforms.videoTexture.value = videoTextureA;
+    material.uniforms.videoTextureB.value = videoTextureB;
+    material.uniforms.interpAlpha.value = interpAlpha;
+    material.uniforms.videoSize.value.set(videoWidth, videoHeight);
+    material.uniforms.tileSize.value = tileSize;
+
+    // Set tile UV coordinates
+    material.uniforms.tileUV_means_l.value.set(
+      tileUVs.means_l.u0,
+      tileUVs.means_l.v0,
+      tileUVs.means_l.u1,
+      tileUVs.means_l.v1,
+    );
+    material.uniforms.tileUV_means_u.value.set(
+      tileUVs.means_u.u0,
+      tileUVs.means_u.v0,
+      tileUVs.means_u.u1,
+      tileUVs.means_u.v1,
+    );
+    material.uniforms.tileUV_quats.value.set(
+      tileUVs.quats.u0,
+      tileUVs.quats.v0,
+      tileUVs.quats.u1,
+      tileUVs.quats.v1,
+    );
+    material.uniforms.tileUV_scales.value.set(
+      tileUVs.scales.u0,
+      tileUVs.scales.v0,
+      tileUVs.scales.u1,
+      tileUVs.scales.v1,
+    );
+    material.uniforms.tileUV_sh0.value.set(
+      tileUVs.sh0.u0,
+      tileUVs.sh0.v0,
+      tileUVs.sh0.u1,
+      tileUVs.sh0.v1,
+    );
+
+    // Render to packed splat texture
+    const renderState = this.saveRenderState(renderer);
+
+    const layerSize = SPLAT_TEX_WIDTH * SPLAT_TEX_HEIGHT;
+    const numLayers = Math.ceil(count / layerSize);
+
+    PackedSplats.fullScreenQuad.material = material;
+
+    for (let layer = 0; layer < numLayers; layer++) {
+      const layerBase = layer * layerSize;
+      const layerCount = Math.min(count - layerBase, layerSize);
+      const layerYEnd = Math.ceil(layerCount / SPLAT_TEX_WIDTH);
+
+      material.uniforms.targetLayer.value = layer;
+      material.uniforms.targetBase.value = layerBase;
+      material.uniforms.targetCount.value = layerCount;
+
+      this.target.scissor.set(0, 0, SPLAT_TEX_WIDTH, layerYEnd);
+      renderer.setRenderTarget(this.target, layer);
+      renderer.xr.enabled = false;
+      renderer.autoClear = false;
       const gl = renderer.getContext() as WebGL2RenderingContext;
       gl.clearBufferuiv(gl.COLOR, 0, PackedSplats.clearValue);
       PackedSplats.fullScreenQuad.render(renderer);
