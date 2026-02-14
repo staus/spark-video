@@ -159,12 +159,6 @@ void main() {
     }
 
     // Compute the 2D covariance by projecting the 3D covariance
-    // and picking out the XY plane components.
-    // Keeping below because we may need it in the future
-    // for skinning deformations.
-    // mat3 W = transpose(mat3(viewMatrix));
-    // mat3 T = W * J;
-    // mat3 cov2D = transpose(T) * cov3D * T;
     mat3 cov2D = transpose(J) * cov3D * J;
     float a = cov2D[0][0];
     float d = cov2D[1][1];
