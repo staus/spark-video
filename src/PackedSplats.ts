@@ -1103,6 +1103,19 @@ export class PackedSplats {
   }
 
   /**
+   * Update the splat count for GPU video mode
+   * Call this before updateFromVideoTextureGPU when frame has different count
+   */
+  updateVideoSplatCount(count: number) {
+    if (!this.gpuVideoModeData) {
+      return;
+    }
+    this.gpuVideoModeData.count = count;
+    this.gpuVideoModeData.material.uniforms.splatCount.value = count;
+    this.numSplats = count;
+  }
+
+  /**
    * Dispose GPU video mode resources
    */
   disposeVideoModeGPU() {

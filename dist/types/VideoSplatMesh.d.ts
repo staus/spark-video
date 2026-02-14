@@ -23,6 +23,9 @@ export interface Video4DGSMetadata {
             codebook: number[];
         };
     };
+    "4dgs"?: {
+        frame_gaussian_counts?: number[];
+    };
 }
 /**
  * VideoSplatMesh - Extends SplatMesh with animated WebP video playback
@@ -51,6 +54,8 @@ export declare class VideoSplatMesh extends SplatMesh {
     private ctx;
     private canvasTexture;
     private tileUVs;
+    private frameGaussianCounts;
+    private staticCount;
     currentFrameIndex: number;
     isPlaying: boolean;
     private lastFrameTime;
@@ -71,10 +76,18 @@ export declare class VideoSplatMesh extends SplatMesh {
     private drawFrame;
     private createTexture;
     /**
+     * Get the gaussian count for a specific frame
+     */
+    private getFrameSplatCount;
+    /**
      * Call each frame from the render loop.
      * Returns true if a new frame was decoded.
      */
     tick(renderer: THREE.WebGLRenderer, now?: number): boolean;
+    /**
+     * Find SparkRenderer in scene and trigger immediate regeneration
+     */
+    private triggerImmediateRegeneration;
     /**
      * Decode first frame without starting playback.
      * Call after loadVideo() to show initial frame.

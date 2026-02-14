@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { GPUVideoTileUVs, SOGVideoMetadata } from "./PackedSplats";
+import { SparkRenderer } from "./SparkRenderer";
 import { SplatMesh, type SplatMeshOptions } from "./SplatMesh";
 
 // WebCodecs ImageDecoder API types (not yet in lib.dom.d.ts)
@@ -53,6 +54,9 @@ export interface Video4DGSMetadata {
       codebook: number[];
     };
   };
+  "4dgs"?: {
+    frame_gaussian_counts?: number[];
+  };
 }
 
 /**
@@ -87,6 +91,10 @@ export class VideoSplatMesh extends SplatMesh {
 
   // Tile UV coordinates for GPU decode
   private tileUVs: GPUVideoTileUVs | null = null;
+
+  // Per-frame gaussian counts (optional - if not provided, uses static count)
+  private frameGaussianCounts: number[] | null = null;
+  private staticCount = 0;
 
   // Playback state
   currentFrameIndex = 0;
@@ -177,6 +185,12 @@ export class VideoSplatMesh extends SplatMesh {
     // Calculate tile UVs
     this.tileUVs = this.calculateTileUVs(metadata);
 
+    // Store per-frame gaussian counts if available
+    this.staticCount = metadata.sog.count;
+    if (metadata["4dgs"]?.frame_gaussian_counts) {
+      this.frameGaussianCounts = metadata["4dgs"].frame_gaussian_counts;
+    }
+
     // Create texture from first frame
     this.drawFrame(0);
     this.createTexture();
@@ -191,7 +205,10 @@ export class VideoSplatMesh extends SplatMesh {
     };
 
     this.packedSplats.initVideoModeGPU(sparkMetadata, metadata.tile_size);
-    this.numSplats = sparkMetadata.count;
+
+    // Use first frame's count if available, otherwise static count
+    const initialCount = this.frameGaussianCounts?.[0] ?? this.staticCount;
+    this.numSplats = initialCount;
 
     const loadTime = performance.now() - loadStart;
     console.log(`VideoSplatMesh loaded in ${loadTime.toFixed(0)}ms`);
@@ -248,6 +265,19 @@ export class VideoSplatMesh extends SplatMesh {
   }
 
   /**
+   * Get the gaussian count for a specific frame
+   */
+  private getFrameSplatCount(frameIndex: number): number {
+    if (
+      this.frameGaussianCounts &&
+      frameIndex < this.frameGaussianCounts.length
+    ) {
+      return this.frameGaussianCounts[frameIndex];
+    }
+    return this.staticCount;
+  }
+
+  /**
    * Call each frame from the render loop.
    * Returns true if a new frame was decoded.
    */
@@ -282,6 +312,11 @@ export class VideoSplatMesh extends SplatMesh {
     // Draw frame to canvas
     this.drawFrame(this.currentFrameIndex);
 
+    // Update splat count for this frame (handles varying gaussian counts per frame)
+    const frameCount = this.getFrameSplatCount(this.currentFrameIndex);
+    this.packedSplats.updateVideoSplatCount(frameCount);
+    this.numSplats = frameCount;
+
     // Upload texture to GPU
     this.canvasTexture.needsUpdate = true;
     renderer.initTexture(this.canvasTexture);
@@ -295,8 +330,15 @@ export class VideoSplatMesh extends SplatMesh {
       this.videoHeight,
     );
 
+    // Flush GPU to ensure decode completes before reading
+    const gl = renderer.getContext() as WebGL2RenderingContext;
+    gl.flush();
+
     // Trigger SparkRenderer regeneration by incrementing version
     this.updateVersion();
+
+    // Force immediate regeneration by finding SparkRenderer and triggering sync update
+    this.triggerImmediateRegeneration(renderer);
 
     // Notify callback
     if (this.onFrameChange) {
@@ -307,11 +349,48 @@ export class VideoSplatMesh extends SplatMesh {
   }
 
   /**
+   * Find SparkRenderer in scene and trigger immediate regeneration
+   */
+  private triggerImmediateRegeneration(_renderer: THREE.WebGLRenderer) {
+    // Walk up to find the scene
+    let current: THREE.Object3D | null = this as THREE.Object3D;
+    while (current && !(current instanceof THREE.Scene)) {
+      current = current.parent;
+    }
+    if (!current) return;
+
+    const scene = current as THREE.Scene;
+
+    // Find SparkRenderer in the scene
+    let spark: SparkRenderer | null = null;
+    scene.traverse((node) => {
+      if (node instanceof SparkRenderer) {
+        spark = node;
+      }
+    });
+
+    if (spark) {
+      const sr = spark as SparkRenderer;
+      // Force synchronous update by setting needsUpdate and preUpdate
+      sr.needsUpdate = true;
+      const savedPreUpdate = sr.preUpdate;
+      sr.preUpdate = true;
+      sr.update({ scene, viewToWorld: sr.defaultView.viewToWorld });
+      sr.preUpdate = savedPreUpdate;
+    }
+  }
+
+  /**
    * Decode first frame without starting playback.
    * Call after loadVideo() to show initial frame.
    */
   decodeFirstFrame(renderer: THREE.WebGLRenderer) {
     if (!this.canvasTexture || !this.tileUVs) return;
+
+    // Update splat count for first frame
+    const frameCount = this.getFrameSplatCount(0);
+    this.packedSplats.updateVideoSplatCount(frameCount);
+    this.numSplats = frameCount;
 
     renderer.initTexture(this.canvasTexture);
     this.packedSplats.updateFromVideoTextureGPU(
@@ -321,7 +400,13 @@ export class VideoSplatMesh extends SplatMesh {
       this.videoWidth,
       this.videoHeight,
     );
+
+    // Flush GPU to ensure decode completes
+    const gl = renderer.getContext() as WebGL2RenderingContext;
+    gl.flush();
+
     this.updateVersion();
+    this.triggerImmediateRegeneration(renderer);
   }
 
   play() {
@@ -346,6 +431,11 @@ export class VideoSplatMesh extends SplatMesh {
     this.currentFrameIndex = Math.max(0, Math.min(frame, this.totalFrames - 1));
     this.drawFrame(this.currentFrameIndex);
 
+    // Update splat count for this frame
+    const frameCount = this.getFrameSplatCount(this.currentFrameIndex);
+    this.packedSplats.updateVideoSplatCount(frameCount);
+    this.numSplats = frameCount;
+
     if (this.canvasTexture && this.tileUVs) {
       this.canvasTexture.needsUpdate = true;
 
@@ -359,7 +449,13 @@ export class VideoSplatMesh extends SplatMesh {
           this.videoWidth,
           this.videoHeight,
         );
+
+        // Flush GPU to ensure decode completes
+        const gl = renderer.getContext() as WebGL2RenderingContext;
+        gl.flush();
+
         this.updateVersion();
+        this.triggerImmediateRegeneration(renderer);
       }
     }
 

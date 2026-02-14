@@ -9956,6 +9956,18 @@ const _PackedSplats = class _PackedSplats {
     this.resetRenderState(renderer, renderState);
   }
   /**
+   * Update the splat count for GPU video mode
+   * Call this before updateFromVideoTextureGPU when frame has different count
+   */
+  updateVideoSplatCount(count) {
+    if (!this.gpuVideoModeData) {
+      return;
+    }
+    this.gpuVideoModeData.count = count;
+    this.gpuVideoModeData.material.uniforms.splatCount.value = count;
+    this.numSplats = count;
+  }
+  /**
    * Dispose GPU video mode resources
    */
   disposeVideoModeGPU() {
@@ -12305,6 +12317,8 @@ class VideoSplatMesh extends SplatMesh {
     this.videoHeight = 0;
     this.canvasTexture = null;
     this.tileUVs = null;
+    this.frameGaussianCounts = null;
+    this.staticCount = 0;
     this.currentFrameIndex = 0;
     this.isPlaying = false;
     this.lastFrameTime = 0;
@@ -12329,6 +12343,7 @@ class VideoSplatMesh extends SplatMesh {
    * Load an animated WebP video with JSON metadata
    */
   async loadVideo(webpBlob, metadata) {
+    var _a2, _b2;
     const loadStart = performance.now();
     if (!metadata.sog || !metadata.layout || !metadata.video) {
       throw new Error("Invalid video metadata");
@@ -12365,6 +12380,10 @@ class VideoSplatMesh extends SplatMesh {
       frame.close();
     }
     this.tileUVs = this.calculateTileUVs(metadata);
+    this.staticCount = metadata.sog.count;
+    if ((_a2 = metadata["4dgs"]) == null ? void 0 : _a2.frame_gaussian_counts) {
+      this.frameGaussianCounts = metadata["4dgs"].frame_gaussian_counts;
+    }
     this.drawFrame(0);
     this.createTexture();
     const sparkMetadata = {
@@ -12375,7 +12394,8 @@ class VideoSplatMesh extends SplatMesh {
       sh0Codebook: metadata.sog.sh0.codebook
     };
     this.packedSplats.initVideoModeGPU(sparkMetadata, metadata.tile_size);
-    this.numSplats = sparkMetadata.count;
+    const initialCount = ((_b2 = this.frameGaussianCounts) == null ? void 0 : _b2[0]) ?? this.staticCount;
+    this.numSplats = initialCount;
     const loadTime = performance.now() - loadStart;
     console.log(`VideoSplatMesh loaded in ${loadTime.toFixed(0)}ms`);
     return { loadTime };
@@ -12423,6 +12443,15 @@ class VideoSplatMesh extends SplatMesh {
     this.canvasTexture.needsUpdate = true;
   }
   /**
+   * Get the gaussian count for a specific frame
+   */
+  getFrameSplatCount(frameIndex) {
+    if (this.frameGaussianCounts && frameIndex < this.frameGaussianCounts.length) {
+      return this.frameGaussianCounts[frameIndex];
+    }
+    return this.staticCount;
+  }
+  /**
    * Call each frame from the render loop.
    * Returns true if a new frame was decoded.
    */
@@ -12443,6 +12472,9 @@ class VideoSplatMesh extends SplatMesh {
     this.accumulatedTime -= this.frameInterval;
     this.currentFrameIndex = (this.currentFrameIndex + 1) % this.totalFrames;
     this.drawFrame(this.currentFrameIndex);
+    const frameCount = this.getFrameSplatCount(this.currentFrameIndex);
+    this.packedSplats.updateVideoSplatCount(frameCount);
+    this.numSplats = frameCount;
     this.canvasTexture.needsUpdate = true;
     renderer.initTexture(this.canvasTexture);
     this.packedSplats.updateFromVideoTextureGPU(
@@ -12452,11 +12484,39 @@ class VideoSplatMesh extends SplatMesh {
       this.videoWidth,
       this.videoHeight
     );
+    const gl = renderer.getContext();
+    gl.flush();
     this.updateVersion();
+    this.triggerImmediateRegeneration(renderer);
     if (this.onFrameChange) {
       this.onFrameChange(this.currentFrameIndex, this.totalFrames);
     }
     return true;
+  }
+  /**
+   * Find SparkRenderer in scene and trigger immediate regeneration
+   */
+  triggerImmediateRegeneration(_renderer) {
+    let current = this;
+    while (current && !(current instanceof THREE.Scene)) {
+      current = current.parent;
+    }
+    if (!current) return;
+    const scene = current;
+    let spark = null;
+    scene.traverse((node) => {
+      if (node instanceof SparkRenderer) {
+        spark = node;
+      }
+    });
+    if (spark) {
+      const sr = spark;
+      sr.needsUpdate = true;
+      const savedPreUpdate = sr.preUpdate;
+      sr.preUpdate = true;
+      sr.update({ scene, viewToWorld: sr.defaultView.viewToWorld });
+      sr.preUpdate = savedPreUpdate;
+    }
   }
   /**
    * Decode first frame without starting playback.
@@ -12464,6 +12524,9 @@ class VideoSplatMesh extends SplatMesh {
    */
   decodeFirstFrame(renderer) {
     if (!this.canvasTexture || !this.tileUVs) return;
+    const frameCount = this.getFrameSplatCount(0);
+    this.packedSplats.updateVideoSplatCount(frameCount);
+    this.numSplats = frameCount;
     renderer.initTexture(this.canvasTexture);
     this.packedSplats.updateFromVideoTextureGPU(
       renderer,
@@ -12472,7 +12535,10 @@ class VideoSplatMesh extends SplatMesh {
       this.videoWidth,
       this.videoHeight
     );
+    const gl = renderer.getContext();
+    gl.flush();
     this.updateVersion();
+    this.triggerImmediateRegeneration(renderer);
   }
   play() {
     this.isPlaying = true;
@@ -12492,6 +12558,9 @@ class VideoSplatMesh extends SplatMesh {
   seekToFrame(frame, renderer) {
     this.currentFrameIndex = Math.max(0, Math.min(frame, this.totalFrames - 1));
     this.drawFrame(this.currentFrameIndex);
+    const frameCount = this.getFrameSplatCount(this.currentFrameIndex);
+    this.packedSplats.updateVideoSplatCount(frameCount);
+    this.numSplats = frameCount;
     if (this.canvasTexture && this.tileUVs) {
       this.canvasTexture.needsUpdate = true;
       if (renderer) {
@@ -12503,7 +12572,10 @@ class VideoSplatMesh extends SplatMesh {
           this.videoWidth,
           this.videoHeight
         );
+        const gl = renderer.getContext();
+        gl.flush();
         this.updateVersion();
+        this.triggerImmediateRegeneration(renderer);
       }
     }
     if (this.onFrameChange) {
