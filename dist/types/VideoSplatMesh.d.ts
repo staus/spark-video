@@ -30,6 +30,9 @@ export interface Video4DGSMetadata {
 /**
  * VideoSplatMesh - Extends SplatMesh with animated WebP video playback
  *
+ * Uses ImageBitmap directly as texture source to avoid canvas color space conversion.
+ * This preserves raw pixel values needed for GPU decode shader.
+ *
  * Usage:
  *   const videoMesh = new VideoSplatMesh();
  *   await videoMesh.loadVideo(webpBlob, jsonMetadata);
@@ -50,9 +53,7 @@ export declare class VideoSplatMesh extends SplatMesh {
     private frameInterval;
     private videoWidth;
     private videoHeight;
-    private canvas;
-    private ctx;
-    private canvasTexture;
+    private frameTexture;
     private tileUVs;
     private frameGaussianCounts;
     private staticCount;
@@ -73,8 +74,11 @@ export declare class VideoSplatMesh extends SplatMesh {
         loadTime: number;
     }>;
     private calculateTileUVs;
-    private drawFrame;
-    private createTexture;
+    /**
+     * Update texture with a specific frame's ImageBitmap
+     * Uses THREE.Texture directly from ImageBitmap to avoid canvas color conversion
+     */
+    private updateFrameTexture;
     /**
      * Get the gaussian count for a specific frame
      */

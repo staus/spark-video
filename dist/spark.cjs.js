@@ -12334,7 +12334,7 @@ class VideoSplatMesh extends SplatMesh {
     this.frameInterval = 1e3 / 30;
     this.videoWidth = 0;
     this.videoHeight = 0;
-    this.canvasTexture = null;
+    this.frameTexture = null;
     this.tileUVs = null;
     this.frameGaussianCounts = null;
     this.staticCount = 0;
@@ -12343,14 +12343,6 @@ class VideoSplatMesh extends SplatMesh {
     this.lastFrameTime = 0;
     this.accumulatedTime = 0;
     this.onFrameChange = null;
-    this.canvas = document.createElement("canvas");
-    const ctx = this.canvas.getContext("2d", {
-      willReadFrequently: false,
-      alpha: true,
-      colorSpace: "srgb"
-    });
-    if (!ctx) throw new Error("Failed to create 2D context");
-    this.ctx = ctx;
   }
   /**
    * Check if ImageDecoder API is available
@@ -12388,12 +12380,11 @@ class VideoSplatMesh extends SplatMesh {
       if (i === 0) {
         this.videoWidth = frame.displayWidth;
         this.videoHeight = frame.displayHeight;
-        this.canvas.width = this.videoWidth;
-        this.canvas.height = this.videoHeight;
       }
       const bitmap = await createImageBitmap(frame, {
         premultiplyAlpha: "none",
-        colorSpaceConversion: "none"
+        colorSpaceConversion: "none",
+        imageOrientation: "flipY"
       });
       this.frameData.push(bitmap);
       frame.close();
@@ -12403,8 +12394,7 @@ class VideoSplatMesh extends SplatMesh {
     if ((_a2 = metadata["4dgs"]) == null ? void 0 : _a2.frame_gaussian_counts) {
       this.frameGaussianCounts = metadata["4dgs"].frame_gaussian_counts;
     }
-    this.drawFrame(0);
-    this.createTexture();
+    this.updateFrameTexture(0);
     const sparkMetadata = {
       count: metadata.sog.count,
       mins: metadata.sog.bounds.min,
@@ -12443,24 +12433,26 @@ class VideoSplatMesh extends SplatMesh {
       sh0: getTileUV("sh0")
     };
   }
-  drawFrame(index) {
-    if (index >= 0 && index < this.frameData.length) {
-      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-      this.ctx.drawImage(this.frameData[index], 0, 0);
-      this.currentFrameIndex = index;
+  /**
+   * Update texture with a specific frame's ImageBitmap
+   * Uses THREE.Texture directly from ImageBitmap to avoid canvas color conversion
+   */
+  updateFrameTexture(index) {
+    if (index < 0 || index >= this.frameData.length) return;
+    const bitmap = this.frameData[index];
+    this.currentFrameIndex = index;
+    if (this.frameTexture) {
+      this.frameTexture.image = bitmap;
+      this.frameTexture.needsUpdate = true;
+    } else {
+      this.frameTexture = new THREE__namespace.Texture(bitmap);
+      this.frameTexture.minFilter = THREE__namespace.NearestFilter;
+      this.frameTexture.magFilter = THREE__namespace.NearestFilter;
+      this.frameTexture.generateMipmaps = false;
+      this.frameTexture.colorSpace = THREE__namespace.NoColorSpace;
+      this.frameTexture.flipY = false;
+      this.frameTexture.needsUpdate = true;
     }
-  }
-  createTexture() {
-    if (this.canvasTexture) {
-      this.canvasTexture.dispose();
-    }
-    this.canvasTexture = new THREE__namespace.CanvasTexture(this.canvas);
-    this.canvasTexture.minFilter = THREE__namespace.NearestFilter;
-    this.canvasTexture.magFilter = THREE__namespace.NearestFilter;
-    this.canvasTexture.generateMipmaps = false;
-    this.canvasTexture.colorSpace = THREE__namespace.LinearSRGBColorSpace;
-    this.canvasTexture.flipY = true;
-    this.canvasTexture.needsUpdate = true;
   }
   /**
    * Get the gaussian count for a specific frame
@@ -12476,7 +12468,7 @@ class VideoSplatMesh extends SplatMesh {
    * Returns true if a new frame was decoded.
    */
   tick(renderer, now = performance.now()) {
-    if (!this.isPlaying || !this.canvasTexture || !this.tileUVs) {
+    if (!this.isPlaying || !this.frameTexture || !this.tileUVs) {
       return false;
     }
     if (this.lastFrameTime === 0) {
@@ -12491,15 +12483,14 @@ class VideoSplatMesh extends SplatMesh {
     }
     this.accumulatedTime -= this.frameInterval;
     this.currentFrameIndex = (this.currentFrameIndex + 1) % this.totalFrames;
-    this.drawFrame(this.currentFrameIndex);
+    this.updateFrameTexture(this.currentFrameIndex);
     const frameCount = this.getFrameSplatCount(this.currentFrameIndex);
     this.packedSplats.updateVideoSplatCount(frameCount);
     this.numSplats = frameCount;
-    this.canvasTexture.needsUpdate = true;
-    renderer.initTexture(this.canvasTexture);
+    renderer.initTexture(this.frameTexture);
     this.packedSplats.updateFromVideoTextureGPU(
       renderer,
-      this.canvasTexture,
+      this.frameTexture,
       this.tileUVs,
       this.videoWidth,
       this.videoHeight
@@ -12543,14 +12534,14 @@ class VideoSplatMesh extends SplatMesh {
    * Call after loadVideo() to show initial frame.
    */
   decodeFirstFrame(renderer) {
-    if (!this.canvasTexture || !this.tileUVs) return;
+    if (!this.frameTexture || !this.tileUVs) return;
     const frameCount = this.getFrameSplatCount(0);
     this.packedSplats.updateVideoSplatCount(frameCount);
     this.numSplats = frameCount;
-    renderer.initTexture(this.canvasTexture);
+    renderer.initTexture(this.frameTexture);
     this.packedSplats.updateFromVideoTextureGPU(
       renderer,
-      this.canvasTexture,
+      this.frameTexture,
       this.tileUVs,
       this.videoWidth,
       this.videoHeight
@@ -12577,17 +12568,16 @@ class VideoSplatMesh extends SplatMesh {
   }
   seekToFrame(frame, renderer) {
     this.currentFrameIndex = Math.max(0, Math.min(frame, this.totalFrames - 1));
-    this.drawFrame(this.currentFrameIndex);
+    this.updateFrameTexture(this.currentFrameIndex);
     const frameCount = this.getFrameSplatCount(this.currentFrameIndex);
     this.packedSplats.updateVideoSplatCount(frameCount);
     this.numSplats = frameCount;
-    if (this.canvasTexture && this.tileUVs) {
-      this.canvasTexture.needsUpdate = true;
+    if (this.frameTexture && this.tileUVs) {
       if (renderer) {
-        renderer.initTexture(this.canvasTexture);
+        renderer.initTexture(this.frameTexture);
         this.packedSplats.updateFromVideoTextureGPU(
           renderer,
-          this.canvasTexture,
+          this.frameTexture,
           this.tileUVs,
           this.videoWidth,
           this.videoHeight
@@ -12610,9 +12600,9 @@ class VideoSplatMesh extends SplatMesh {
   }
   dispose() {
     super.dispose();
-    if (this.canvasTexture) {
-      this.canvasTexture.dispose();
-      this.canvasTexture = null;
+    if (this.frameTexture) {
+      this.frameTexture.dispose();
+      this.frameTexture = null;
     }
     for (const bitmap of this.frameData) {
       bitmap.close();
