@@ -210,3 +210,28 @@ npm run site:deploy
 To compress a splat to [spz](https://scaniverse.com/spz) run
 
 `npm run assets:compress <file or URL to ply>`
+
+## Fork Customizations (sharp-gaussian-splat-host)
+
+This fork includes modifications for 4D Gaussian Splat (4DGS) video playback support.
+
+### Scale Range Extension
+
+The internal log-scale range has been extended to support 4DGS data which contains very small gaussians for fine details:
+
+| Setting | Original | Modified |
+|---------|----------|----------|
+| `LN_SCALE_MIN` | -12.0 | -36.0 |
+
+Files modified:
+- `src/defines.ts` - TypeScript constant
+- `src/shaders/splatDefines.glsl` - GLSL shader constant
+
+This allows scales as small as `exp(-36) ≈ 2.3e-16` (was `exp(-12) ≈ 6e-6`). Without this change, ~27% of fine-detail gaussians in 4DGS data get clamped to incorrect sizes.
+
+### Video Decode Extensions
+
+GPU-accelerated video splat decoding:
+- `src/shaders/videoDecodeUvec4.glsl` - GPU fragment shader for SOG tile decode
+- `src/PackedSplats.ts` - `initVideoModeGPU()`, `updateFromVideoTextureGPU()`
+- `src/VideoSplatMesh.ts` - High-level video splat mesh class
