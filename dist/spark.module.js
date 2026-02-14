@@ -10913,7 +10913,9 @@ const _SparkRenderer = class _SparkRenderer extends THREE.Mesh {
       // Gsplat collection to render
       packedSplats: { type: "t", value: PackedSplats.getEmpty() },
       // Splat encoding ranges
-      rgbMinMaxLnScaleMinMax: { value: new THREE.Vector4() },
+      rgbMinMaxLnScaleMinMax: {
+        value: new THREE.Vector4(0, 1, LN_SCALE_MIN, LN_SCALE_MAX)
+      },
       // Time in seconds for time-based effects
       time: { value: 0 },
       // Delta time in seconds since last frame
@@ -11066,7 +11068,7 @@ const _SparkRenderer = class _SparkRenderer extends THREE.Mesh {
   // to update the canvas, so we must switch the viewpoint back to
   // defaultView when we're finished.
   prepareViewpoint(viewpoint) {
-    var _a2, _b2, _c, _d;
+    var _a2, _b2, _c, _d, _e, _f;
     this.viewpoint = viewpoint ?? this.viewpoint;
     if (this.viewpoint.display) {
       const { accumulator, geometry } = this.viewpoint.display;
@@ -11086,6 +11088,15 @@ const _SparkRenderer = class _SparkRenderer extends THREE.Mesh {
       this.uniforms.numSplats.value = 0;
       this.uniforms.packedSplats.value = PackedSplats.getEmpty();
       this.geometry = EMPTY_GEOMETRY;
+      if ((_f = (_e = this.active) == null ? void 0 : _e.splats) == null ? void 0 : _f.splatEncoding) {
+        const enc = this.active.splats.splatEncoding;
+        this.uniforms.rgbMinMaxLnScaleMinMax.value.set(
+          enc.rgbMin ?? 0,
+          enc.rgbMax ?? 1,
+          enc.lnScaleMin ?? LN_SCALE_MIN,
+          enc.lnScaleMax ?? LN_SCALE_MAX
+        );
+      }
     }
   }
   // If spark.autoUpdate is false then you must manually call

@@ -383,7 +383,9 @@ export class SparkRenderer extends THREE.Mesh {
       // Gsplat collection to render
       packedSplats: { type: "t", value: PackedSplats.getEmpty() },
       // Splat encoding ranges
-      rgbMinMaxLnScaleMinMax: { value: new THREE.Vector4() },
+      rgbMinMaxLnScaleMinMax: {
+        value: new THREE.Vector4(0, 1, LN_SCALE_MIN, LN_SCALE_MAX),
+      },
       // Time in seconds for time-based effects
       time: { value: 0 },
       // Delta time in seconds since last frame
@@ -614,6 +616,17 @@ export class SparkRenderer extends THREE.Mesh {
       this.uniforms.numSplats.value = 0;
       this.uniforms.packedSplats.value = PackedSplats.getEmpty();
       this.geometry = EMPTY_GEOMETRY;
+      // Still set encoding from active accumulator if available to ensure
+      // consistency when display becomes ready
+      if (this.active?.splats?.splatEncoding) {
+        const enc = this.active.splats.splatEncoding;
+        this.uniforms.rgbMinMaxLnScaleMinMax.value.set(
+          enc.rgbMin ?? 0.0,
+          enc.rgbMax ?? 1.0,
+          enc.lnScaleMin ?? LN_SCALE_MIN,
+          enc.lnScaleMax ?? LN_SCALE_MAX,
+        );
+      }
     }
   }
 
