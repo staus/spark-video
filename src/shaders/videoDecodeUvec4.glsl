@@ -71,7 +71,7 @@ vec3 decodePosition(int splatIndex) {
     vec4 meansU = sampleTile(tileUV_means_u, splatIndex);
 
     // Combine low and high bytes to get uint16 values (0-65535 range)
-    // Video texture samples are in sRGB 0-1, so we multiply by 255
+    // Texture samples are raw bytes normalized to 0-1, multiply by 255 to recover original bytes
     vec3 posU16 = vec3(
         floor(meansL.r * 255.0 + 0.5) + floor(meansU.r * 255.0 + 0.5) * 256.0,
         floor(meansL.g * 255.0 + 0.5) + floor(meansU.g * 255.0 + 0.5) * 256.0,

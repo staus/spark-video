@@ -182,9 +182,6 @@ export class VideoSplatMesh extends SplatMesh {
       this.frameGaussianCounts = metadata["4dgs"].frame_gaussian_counts;
     }
 
-    // Create texture from first frame
-    this.updateFrameTexture(0);
-
     // Initialize GPU video mode in PackedSplats
     const sparkMetadata: SOGVideoMetadata = {
       count: metadata.sog.count,
@@ -233,48 +230,80 @@ export class VideoSplatMesh extends SplatMesh {
     };
   }
 
+  // WebGL texture handle for raw uploads (bypasses THREE.js color management)
+  private glTexture: WebGLTexture | null = null;
+
   /**
-   * Update texture with a specific frame's ImageBitmap
-   * Uses THREE.Texture directly from ImageBitmap to avoid canvas color conversion
+   * Upload frame to GPU using raw WebGL, bypassing THREE.js color management.
+   * Guarantees no color space conversion, no alpha premultiplication.
    */
-  private updateFrameTexture(index: number) {
+  private uploadFrameRawWebGL(
+    renderer: THREE.WebGLRenderer,
+    index: number,
+  ): void {
     if (index < 0 || index >= this.frameData.length) return;
 
     const bitmap = this.frameData[index];
+    const gl = renderer.getContext() as WebGL2RenderingContext;
     this.currentFrameIndex = index;
 
-    if (this.frameTexture) {
-      // Update existing texture's image source
-      this.frameTexture.image = bitmap;
-      this.frameTexture.needsUpdate = true;
-    } else {
-      // Create new texture directly from ImageBitmap
-      this.frameTexture = new THREE.Texture(bitmap);
+    // Create THREE.Texture container on first use
+    if (!this.frameTexture) {
+      this.frameTexture = new THREE.Texture();
       this.frameTexture.minFilter = THREE.NearestFilter;
       this.frameTexture.magFilter = THREE.NearestFilter;
       this.frameTexture.generateMipmaps = false;
-      // Use NoColorSpace to prevent any color space conversion in WebGL
-      // This ensures raw byte values are preserved for GPU decode
       this.frameTexture.colorSpace = THREE.NoColorSpace;
-      // flipY is ignored for ImageBitmap sources - shader handles coordinate conversion
-      this.frameTexture.flipY = false;
-      this.frameTexture.needsUpdate = true;
+
+      // Create raw WebGL texture
+      this.glTexture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.glTexture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+      // Inject our WebGL texture into THREE.js texture properties
+      const texProps = renderer.properties.get(this.frameTexture) as {
+        __webglTexture: WebGLTexture | null;
+        __webglInit: boolean;
+      };
+      texProps.__webglTexture = this.glTexture;
+      texProps.__webglInit = true;
     }
+
+    // Upload with explicit raw settings - no color conversion
+    gl.bindTexture(gl.TEXTURE_2D, this.glTexture);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA8, // Raw RGBA, not SRGB8_ALPHA8
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      bitmap,
+    );
   }
 
   /**
    * Decode a frame to GPU. Single path for all frame updates.
    */
   private decodeFrame(renderer: THREE.WebGLRenderer, frameIndex: number) {
-    if (!this.frameTexture || !this.tileUVs) return;
+    if (!this.tileUVs) return;
 
-    this.updateFrameTexture(frameIndex);
+    // Upload frame using raw WebGL (bypasses THREE.js color management)
+    this.uploadFrameRawWebGL(renderer, frameIndex);
+
+    // frameTexture is guaranteed to exist after uploadFrameRawWebGL
+    if (!this.frameTexture) return;
 
     const count = this.frameGaussianCounts?.[frameIndex] ?? this.staticCount;
     this.packedSplats.updateVideoSplatCount(count);
     this.numSplats = count;
 
-    renderer.initTexture(this.frameTexture);
     this.packedSplats.updateFromVideoTextureGPU(
       renderer,
       this.frameTexture,
@@ -363,6 +392,9 @@ export class VideoSplatMesh extends SplatMesh {
       this.frameTexture.dispose();
       this.frameTexture = null;
     }
+    // glTexture is deleted by THREE.js when frameTexture.dispose() is called
+    // (we injected it into texture properties)
+    this.glTexture = null;
     for (const bitmap of this.frameData) {
       bitmap.close();
     }

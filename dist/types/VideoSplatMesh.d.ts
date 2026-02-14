@@ -74,11 +74,12 @@ export declare class VideoSplatMesh extends SplatMesh {
         loadTime: number;
     }>;
     private calculateTileUVs;
+    private glTexture;
     /**
-     * Update texture with a specific frame's ImageBitmap
-     * Uses THREE.Texture directly from ImageBitmap to avoid canvas color conversion
+     * Upload frame to GPU using raw WebGL, bypassing THREE.js color management.
+     * Guarantees no color space conversion, no alpha premultiplication.
      */
-    private updateFrameTexture;
+    private uploadFrameRawWebGL;
     /**
      * Decode a frame to GPU. Single path for all frame updates.
      */

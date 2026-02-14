@@ -12354,6 +12354,7 @@ class VideoSplatMesh extends SplatMesh {
     this.lastFrameTime = 0;
     this.accumulatedTime = 0;
     this.onFrameChange = null;
+    this.glTexture = null;
   }
   /**
    * Check if ImageDecoder API is available
@@ -12404,7 +12405,6 @@ class VideoSplatMesh extends SplatMesh {
     if ((_a2 = metadata["4dgs"]) == null ? void 0 : _a2.frame_gaussian_counts) {
       this.frameGaussianCounts = metadata["4dgs"].frame_gaussian_counts;
     }
-    this.updateFrameTexture(0);
     const sparkMetadata = {
       count: metadata.sog.count,
       mins: metadata.sog.bounds.min,
@@ -12444,37 +12444,55 @@ class VideoSplatMesh extends SplatMesh {
     };
   }
   /**
-   * Update texture with a specific frame's ImageBitmap
-   * Uses THREE.Texture directly from ImageBitmap to avoid canvas color conversion
+   * Upload frame to GPU using raw WebGL, bypassing THREE.js color management.
+   * Guarantees no color space conversion, no alpha premultiplication.
    */
-  updateFrameTexture(index) {
+  uploadFrameRawWebGL(renderer, index) {
     if (index < 0 || index >= this.frameData.length) return;
     const bitmap = this.frameData[index];
+    const gl = renderer.getContext();
     this.currentFrameIndex = index;
-    if (this.frameTexture) {
-      this.frameTexture.image = bitmap;
-      this.frameTexture.needsUpdate = true;
-    } else {
-      this.frameTexture = new THREE.Texture(bitmap);
+    if (!this.frameTexture) {
+      this.frameTexture = new THREE.Texture();
       this.frameTexture.minFilter = THREE.NearestFilter;
       this.frameTexture.magFilter = THREE.NearestFilter;
       this.frameTexture.generateMipmaps = false;
       this.frameTexture.colorSpace = THREE.NoColorSpace;
-      this.frameTexture.flipY = false;
-      this.frameTexture.needsUpdate = true;
+      this.glTexture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.glTexture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const texProps = renderer.properties.get(this.frameTexture);
+      texProps.__webglTexture = this.glTexture;
+      texProps.__webglInit = true;
     }
+    gl.bindTexture(gl.TEXTURE_2D, this.glTexture);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA8,
+      // Raw RGBA, not SRGB8_ALPHA8
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      bitmap
+    );
   }
   /**
    * Decode a frame to GPU. Single path for all frame updates.
    */
   decodeFrame(renderer, frameIndex) {
     var _a2, _b2;
-    if (!this.frameTexture || !this.tileUVs) return;
-    this.updateFrameTexture(frameIndex);
+    if (!this.tileUVs) return;
+    this.uploadFrameRawWebGL(renderer, frameIndex);
+    if (!this.frameTexture) return;
     const count = ((_a2 = this.frameGaussianCounts) == null ? void 0 : _a2[frameIndex]) ?? this.staticCount;
     this.packedSplats.updateVideoSplatCount(count);
     this.numSplats = count;
-    renderer.initTexture(this.frameTexture);
     this.packedSplats.updateFromVideoTextureGPU(
       renderer,
       this.frameTexture,
@@ -12545,6 +12563,7 @@ class VideoSplatMesh extends SplatMesh {
       this.frameTexture.dispose();
       this.frameTexture = null;
     }
+    this.glTexture = null;
     for (const bitmap of this.frameData) {
       bitmap.close();
     }
