@@ -53,8 +53,10 @@ vec4 sampleTile(vec4 tileUV, int splatIndex) {
     float u = tileUV.x + (float(tileX) + 0.5) / videoSize.x;
     float v = tileUV.y + (float(tileY) + 0.5) / videoSize.y;
 
-    // ImageBitmap is created with imageOrientation: 'flipY' which handles the
-    // WebGL coordinate system flip. Texture has flipY=false. No shader flip needed.
+    // WebGL texture coordinates: V=0 is the first row of uploaded image data
+    // For ImageBitmap without flipY, this corresponds to the top of the image
+    // Tile UVs are calculated in top-left origin, which matches directly
+    // No V-flip needed
 
     return texture(videoTexture, vec2(u, v));
 }

@@ -165,11 +165,10 @@ export class VideoSplatMesh extends SplatMesh {
       }
 
       // Create ImageBitmap with NO color space conversion to preserve raw values
-      // IMPORTANT: ImageBitmap ignores texture.flipY, so we must flip during bitmap creation
+      // Do NOT use imageOrientation: 'flipY' here - the shader handles coordinate conversion
       const bitmap = await createImageBitmap(frame, {
         premultiplyAlpha: "none",
         colorSpaceConversion: "none",
-        imageOrientation: "flipY",
       });
       this.frameData.push(bitmap);
       frame.close();
@@ -258,7 +257,7 @@ export class VideoSplatMesh extends SplatMesh {
       // Use NoColorSpace to prevent any color space conversion in WebGL
       // This ensures raw byte values are preserved for GPU decode
       this.frameTexture.colorSpace = THREE.NoColorSpace;
-      // Note: flipY is ignored for ImageBitmap - the flip is done via imageOrientation in createImageBitmap
+      // flipY is ignored for ImageBitmap sources - shader handles coordinate conversion
       this.frameTexture.flipY = false;
       this.frameTexture.needsUpdate = true;
     }
