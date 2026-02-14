@@ -1,4 +1,3 @@
-import { SplatEncoding } from './PackedSplats';
 import { RgbaArray } from './RgbaArray';
 import { SparkViewpoint, SparkViewpointOptions } from './SparkViewpoint';
 import { SplatAccumulator } from './SplatAccumulator';
@@ -121,11 +120,6 @@ export type SparkRendererOptions = {
      * radial distance or Z-depth)
      */
     view?: SparkViewpointOptions;
-    /**
-     * Override the default splat encoding ranges for the PackedSplats.
-     * (default: undefined)
-     */
-    splatEncoding?: SplatEncoding;
 };
 export declare class SparkRenderer extends THREE.Mesh {
     renderer: THREE.WebGLRenderer;
@@ -148,7 +142,6 @@ export declare class SparkRenderer extends THREE.Mesh {
     falloff: number;
     clipXY: number;
     focalAdjustment: number;
-    splatEncoding: SplatEncoding;
     splatTexture: null | {
         enable?: boolean;
         texture?: THREE.Data3DTexture;

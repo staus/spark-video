@@ -10858,7 +10858,6 @@ const _SparkRenderer = class _SparkRenderer extends THREE__namespace.Mesh {
     this.falloff = options.falloff ?? 1;
     this.clipXY = options.clipXY ?? 1.4;
     this.focalAdjustment = options.focalAdjustment ?? 1;
-    this.splatEncoding = options.splatEncoding ?? { ...DEFAULT_SPLAT_ENCODING };
     this.active = new SplatAccumulator();
     this.active.refCount = 1;
     this.accumulatorCount = 1;
@@ -11147,7 +11146,7 @@ const _SparkRenderer = class _SparkRenderer extends THREE__namespace.Mesh {
     originToWorld,
     viewToWorld
   }) {
-    var _a2;
+    var _a2, _b2;
     if (!this.canAllocAccumulator()) {
       return false;
     }
@@ -11236,7 +11235,13 @@ const _SparkRenderer = class _SparkRenderer extends THREE__namespace.Mesh {
         new THREE__namespace.Vector3()
       );
       accumulator.ensureGenerate(maxSplats);
-      accumulator.splats.splatEncoding = { ...this.splatEncoding };
+      const sourceMesh = genOrder.find(
+        (node) => {
+          var _a3;
+          return node instanceof SplatMesh && ((_a3 = node.packedSplats) == null ? void 0 : _a3.splatEncoding) != null;
+        }
+      );
+      accumulator.splats.splatEncoding = ((_b2 = sourceMesh == null ? void 0 : sourceMesh.packedSplats) == null ? void 0 : _b2.splatEncoding) ?? { ...DEFAULT_SPLAT_ENCODING };
       accumulator.generateSplats({
         renderer: this.renderer,
         modifier: this.modifier,

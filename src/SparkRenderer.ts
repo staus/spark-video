@@ -1,10 +1,6 @@
 import * as THREE from "three";
 
-import {
-  DEFAULT_SPLAT_ENCODING,
-  PackedSplats,
-  type SplatEncoding,
-} from "./PackedSplats";
+import { DEFAULT_SPLAT_ENCODING, PackedSplats } from "./PackedSplats";
 import { RgbaArray } from "./RgbaArray";
 import { SparkViewpoint, type SparkViewpointOptions } from "./SparkViewpoint";
 import { type GeneratorMapping, SplatAccumulator } from "./SplatAccumulator";
@@ -157,11 +153,6 @@ export type SparkRendererOptions = {
    * radial distance or Z-depth)
    */
   view?: SparkViewpointOptions;
-  /**
-   * Override the default splat encoding ranges for the PackedSplats.
-   * (default: undefined)
-   */
-  splatEncoding?: SplatEncoding;
 };
 
 export class SparkRenderer extends THREE.Mesh {
@@ -186,7 +177,6 @@ export class SparkRenderer extends THREE.Mesh {
   falloff: number;
   clipXY: number;
   focalAdjustment: number;
-  splatEncoding: SplatEncoding;
 
   splatTexture: null | {
     enable?: boolean;
@@ -311,7 +301,6 @@ export class SparkRenderer extends THREE.Mesh {
     this.falloff = options.falloff ?? 1.0;
     this.clipXY = options.clipXY ?? 1.4;
     this.focalAdjustment = options.focalAdjustment ?? 1.0;
-    this.splatEncoding = options.splatEncoding ?? { ...DEFAULT_SPLAT_ENCODING };
 
     this.active = new SplatAccumulator();
     this.active.refCount = 1;
@@ -822,7 +811,13 @@ export class SparkRenderer extends THREE.Mesh {
 
       // Generate the Gsplats according to the mapping that need updating
       accumulator.ensureGenerate(maxSplats);
-      accumulator.splats.splatEncoding = { ...this.splatEncoding };
+      // Inherit splatEncoding from the first source mesh that has one
+      const sourceMesh = genOrder.find(
+        (node): node is SplatMesh =>
+          node instanceof SplatMesh && node.packedSplats?.splatEncoding != null,
+      );
+      accumulator.splats.splatEncoding = sourceMesh?.packedSplats
+        ?.splatEncoding ?? { ...DEFAULT_SPLAT_ENCODING };
       const generated = accumulator.generateSplats({
         renderer: this.renderer,
         modifier: this.modifier,
