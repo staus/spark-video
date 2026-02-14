@@ -62,6 +62,9 @@ export interface Video4DGSMetadata {
 /**
  * VideoSplatMesh - Extends SplatMesh with animated WebP video playback
  *
+ * Uses ImageBitmap directly as texture source to avoid canvas color space conversion.
+ * This preserves raw pixel values needed for GPU decode shader.
+ *
  * Usage:
  *   const videoMesh = new VideoSplatMesh();
  *   await videoMesh.loadVideo(webpBlob, jsonMetadata);
@@ -84,10 +87,8 @@ export class VideoSplatMesh extends SplatMesh {
   private videoWidth = 0;
   private videoHeight = 0;
 
-  // Canvas and texture for frame rendering
-  private canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
-  private canvasTexture: THREE.CanvasTexture | null = null;
+  // Texture created directly from ImageBitmap (no canvas color conversion)
+  private frameTexture: THREE.Texture | null = null;
 
   // Tile UV coordinates for GPU decode
   private tileUVs: GPUVideoTileUVs | null = null;
@@ -108,15 +109,6 @@ export class VideoSplatMesh extends SplatMesh {
 
   constructor(options: SplatMeshOptions = {}) {
     super(options);
-
-    this.canvas = document.createElement("canvas");
-    const ctx = this.canvas.getContext("2d", {
-      willReadFrequently: false,
-      alpha: true,
-      colorSpace: "srgb",
-    });
-    if (!ctx) throw new Error("Failed to create 2D context");
-    this.ctx = ctx;
   }
 
   /**
@@ -161,7 +153,7 @@ export class VideoSplatMesh extends SplatMesh {
 
     console.log(`VideoSplatMesh: ${this.totalFrames} frames @ ${this.fps}fps`);
 
-    // Pre-decode all frames
+    // Pre-decode all frames to ImageBitmap with no color conversion
     this.frameData = [];
     for (let i = 0; i < this.totalFrames; i++) {
       const result = await decoder.decode({ frameIndex: i });
@@ -170,13 +162,14 @@ export class VideoSplatMesh extends SplatMesh {
       if (i === 0) {
         this.videoWidth = frame.displayWidth;
         this.videoHeight = frame.displayHeight;
-        this.canvas.width = this.videoWidth;
-        this.canvas.height = this.videoHeight;
       }
 
+      // Create ImageBitmap with NO color space conversion to preserve raw values
+      // IMPORTANT: ImageBitmap ignores texture.flipY, so we must flip during bitmap creation
       const bitmap = await createImageBitmap(frame, {
         premultiplyAlpha: "none",
         colorSpaceConversion: "none",
+        imageOrientation: "flipY",
       });
       this.frameData.push(bitmap);
       frame.close();
@@ -192,8 +185,7 @@ export class VideoSplatMesh extends SplatMesh {
     }
 
     // Create texture from first frame
-    this.drawFrame(0);
-    this.createTexture();
+    this.updateFrameTexture(0);
 
     // Initialize GPU video mode in PackedSplats
     const sparkMetadata: SOGVideoMetadata = {
@@ -243,27 +235,33 @@ export class VideoSplatMesh extends SplatMesh {
     };
   }
 
-  private drawFrame(index: number) {
-    if (index >= 0 && index < this.frameData.length) {
-      // Clear canvas before drawing to prevent alpha blending with previous frame
-      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-      this.ctx.drawImage(this.frameData[index], 0, 0);
-      this.currentFrameIndex = index;
-    }
-  }
+  /**
+   * Update texture with a specific frame's ImageBitmap
+   * Uses THREE.Texture directly from ImageBitmap to avoid canvas color conversion
+   */
+  private updateFrameTexture(index: number) {
+    if (index < 0 || index >= this.frameData.length) return;
 
-  private createTexture() {
-    if (this.canvasTexture) {
-      this.canvasTexture.dispose();
-    }
+    const bitmap = this.frameData[index];
+    this.currentFrameIndex = index;
 
-    this.canvasTexture = new THREE.CanvasTexture(this.canvas);
-    this.canvasTexture.minFilter = THREE.NearestFilter;
-    this.canvasTexture.magFilter = THREE.NearestFilter;
-    this.canvasTexture.generateMipmaps = false;
-    this.canvasTexture.colorSpace = THREE.LinearSRGBColorSpace;
-    this.canvasTexture.flipY = true;
-    this.canvasTexture.needsUpdate = true;
+    if (this.frameTexture) {
+      // Update existing texture's image source
+      this.frameTexture.image = bitmap;
+      this.frameTexture.needsUpdate = true;
+    } else {
+      // Create new texture directly from ImageBitmap
+      this.frameTexture = new THREE.Texture(bitmap);
+      this.frameTexture.minFilter = THREE.NearestFilter;
+      this.frameTexture.magFilter = THREE.NearestFilter;
+      this.frameTexture.generateMipmaps = false;
+      // Use NoColorSpace to prevent any color space conversion in WebGL
+      // This ensures raw byte values are preserved for GPU decode
+      this.frameTexture.colorSpace = THREE.NoColorSpace;
+      // Note: flipY is ignored for ImageBitmap - the flip is done via imageOrientation in createImageBitmap
+      this.frameTexture.flipY = false;
+      this.frameTexture.needsUpdate = true;
+    }
   }
 
   /**
@@ -287,7 +285,7 @@ export class VideoSplatMesh extends SplatMesh {
     renderer: THREE.WebGLRenderer,
     now: number = performance.now(),
   ): boolean {
-    if (!this.isPlaying || !this.canvasTexture || !this.tileUVs) {
+    if (!this.isPlaying || !this.frameTexture || !this.tileUVs) {
       return false;
     }
 
@@ -311,8 +309,8 @@ export class VideoSplatMesh extends SplatMesh {
     // Advance to next frame
     this.currentFrameIndex = (this.currentFrameIndex + 1) % this.totalFrames;
 
-    // Draw frame to canvas
-    this.drawFrame(this.currentFrameIndex);
+    // Update texture with new frame
+    this.updateFrameTexture(this.currentFrameIndex);
 
     // Update splat count for this frame (handles varying gaussian counts per frame)
     const frameCount = this.getFrameSplatCount(this.currentFrameIndex);
@@ -320,13 +318,12 @@ export class VideoSplatMesh extends SplatMesh {
     this.numSplats = frameCount;
 
     // Upload texture to GPU
-    this.canvasTexture.needsUpdate = true;
-    renderer.initTexture(this.canvasTexture);
+    renderer.initTexture(this.frameTexture);
 
     // GPU decode: video texture -> packed splats
     this.packedSplats.updateFromVideoTextureGPU(
       renderer,
-      this.canvasTexture,
+      this.frameTexture,
       this.tileUVs,
       this.videoWidth,
       this.videoHeight,
@@ -387,17 +384,17 @@ export class VideoSplatMesh extends SplatMesh {
    * Call after loadVideo() to show initial frame.
    */
   decodeFirstFrame(renderer: THREE.WebGLRenderer) {
-    if (!this.canvasTexture || !this.tileUVs) return;
+    if (!this.frameTexture || !this.tileUVs) return;
 
     // Update splat count for first frame
     const frameCount = this.getFrameSplatCount(0);
     this.packedSplats.updateVideoSplatCount(frameCount);
     this.numSplats = frameCount;
 
-    renderer.initTexture(this.canvasTexture);
+    renderer.initTexture(this.frameTexture);
     this.packedSplats.updateFromVideoTextureGPU(
       renderer,
-      this.canvasTexture,
+      this.frameTexture,
       this.tileUVs,
       this.videoWidth,
       this.videoHeight,
@@ -431,22 +428,20 @@ export class VideoSplatMesh extends SplatMesh {
 
   seekToFrame(frame: number, renderer?: THREE.WebGLRenderer) {
     this.currentFrameIndex = Math.max(0, Math.min(frame, this.totalFrames - 1));
-    this.drawFrame(this.currentFrameIndex);
+    this.updateFrameTexture(this.currentFrameIndex);
 
     // Update splat count for this frame
     const frameCount = this.getFrameSplatCount(this.currentFrameIndex);
     this.packedSplats.updateVideoSplatCount(frameCount);
     this.numSplats = frameCount;
 
-    if (this.canvasTexture && this.tileUVs) {
-      this.canvasTexture.needsUpdate = true;
-
+    if (this.frameTexture && this.tileUVs) {
       // GPU decode the frame if renderer is provided
       if (renderer) {
-        renderer.initTexture(this.canvasTexture);
+        renderer.initTexture(this.frameTexture);
         this.packedSplats.updateFromVideoTextureGPU(
           renderer,
-          this.canvasTexture,
+          this.frameTexture,
           this.tileUVs,
           this.videoWidth,
           this.videoHeight,
@@ -477,9 +472,9 @@ export class VideoSplatMesh extends SplatMesh {
 
   dispose() {
     super.dispose();
-    if (this.canvasTexture) {
-      this.canvasTexture.dispose();
-      this.canvasTexture = null;
+    if (this.frameTexture) {
+      this.frameTexture.dispose();
+      this.frameTexture = null;
     }
     for (const bitmap of this.frameData) {
       bitmap.close();
