@@ -57,6 +57,7 @@ export declare class VideoSplatMesh extends SplatMesh {
     private tileUVs;
     private frameGaussianCounts;
     private staticCount;
+    private validationMetadata;
     currentFrameIndex: number;
     isPlaying: boolean;
     private lastFrameTime;
@@ -101,5 +102,11 @@ export declare class VideoSplatMesh extends SplatMesh {
     seekToFrame(frame: number, renderer: THREE.WebGLRenderer): void;
     getTotalFrames(): number;
     getFPS(): number;
+    /**
+     * Validate the decode pipeline by reading back raw pixels and decoded splat data.
+     * Traces through ALL shader math step-by-step with actual codebook values.
+     * Call this from browser console: videoMesh.validateDecode(renderer)
+     */
+    validateDecode(renderer: THREE.WebGLRenderer, splatIndex?: number): Promise<void>;
     dispose(): void;
 }
