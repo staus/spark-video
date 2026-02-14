@@ -12369,7 +12369,7 @@ class VideoSplatMesh extends SplatMesh {
    * Load an animated WebP video with JSON metadata
    */
   async loadVideo(webpBlob, metadata) {
-    var _a2, _b2;
+    var _a2, _b2, _c, _d;
     const loadStart = performance.now();
     if (!metadata.sog || !metadata.layout || !metadata.video) {
       throw new Error("Invalid video metadata");
@@ -12408,10 +12408,12 @@ class VideoSplatMesh extends SplatMesh {
     if ((_a2 = metadata["4dgs"]) == null ? void 0 : _a2.frame_gaussian_counts) {
       this.frameGaussianCounts = metadata["4dgs"].frame_gaussian_counts;
     }
+    const positionMins = ((_b2 = metadata.sog.means) == null ? void 0 : _b2.mins) ?? [0, 0, 0];
+    const positionMaxs = ((_c = metadata.sog.means) == null ? void 0 : _c.maxs) ?? [1, 1, 1];
     const sparkMetadata = {
       count: metadata.sog.count,
-      mins: metadata.sog.bounds.min,
-      maxs: metadata.sog.bounds.max,
+      mins: positionMins,
+      maxs: positionMaxs,
       scaleCodebook: metadata.sog.scales.codebook,
       sh0Codebook: metadata.sog.sh0.codebook
     };
@@ -12420,14 +12422,14 @@ class VideoSplatMesh extends SplatMesh {
     const lnScaleMin = Math.min(...scaleCodebook);
     const lnScaleMax = Math.max(...scaleCodebook);
     this.validationMetadata = {
-      positionMins: metadata.sog.bounds.min,
-      positionMaxs: metadata.sog.bounds.max,
+      positionMins,
+      positionMaxs,
       scaleCodebook,
       sh0Codebook: metadata.sog.sh0.codebook,
       lnScaleMin,
       lnScaleMax
     };
-    const initialCount = ((_b2 = this.frameGaussianCounts) == null ? void 0 : _b2[0]) ?? this.staticCount;
+    const initialCount = ((_d = this.frameGaussianCounts) == null ? void 0 : _d[0]) ?? this.staticCount;
     this.numSplats = initialCount;
     const loadTime = performance.now() - loadStart;
     console.log("[VideoSplatMesh] === Load Summary ===");
