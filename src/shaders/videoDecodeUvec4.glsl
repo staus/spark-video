@@ -35,6 +35,10 @@ uniform sampler2D sh0Codebook;     // Lookup: index -> SH0 value
 // Splat count
 uniform int splatCount;
 
+// Encoding range for pack/unpack (must match render shader)
+// vec4(rgbMin, rgbMax, lnScaleMin, lnScaleMax)
+uniform vec4 rgbMinMaxLnScaleMinMax;
+
 out uvec4 target;
 
 // Constants for quaternion decoding
@@ -186,8 +190,8 @@ void main() {
         vec3 scales = decodeScales(splatIndex);
         vec4 rgba = decodeRGBA(splatIndex);
 
-        // Pack into Spark's uvec4 format
-        target = packSplat(center, scales, quaternion, rgba);
+        // Pack into Spark's uvec4 format using dynamic encoding range
+        target = packSplatEncoding(center, scales, quaternion, rgba, rgbMinMaxLnScaleMinMax);
     } else {
         target = uvec4(0u, 0u, 0u, 0u);
     }

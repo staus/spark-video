@@ -924,8 +924,13 @@ export class PackedSplats {
     // Create scale codebook texture (256x1, R32F format)
     // Stores original log scale values for GPU decode
     const scaleData = new Float32Array(256);
+    let lnScaleMin = Number.POSITIVE_INFINITY;
+    let lnScaleMax = Number.NEGATIVE_INFINITY;
     for (let i = 0; i < 256; i++) {
-      scaleData[i] = metadata.scaleCodebook[i] ?? metadata.scaleCodebook[0];
+      const val = metadata.scaleCodebook[i] ?? metadata.scaleCodebook[0];
+      scaleData[i] = val;
+      if (val < lnScaleMin) lnScaleMin = val;
+      if (val > lnScaleMax) lnScaleMax = val;
     }
     const scaleCodebookTexture = new THREE.DataTexture(
       scaleData,
@@ -954,6 +959,15 @@ export class PackedSplats {
     sh0CodebookTexture.minFilter = THREE.NearestFilter;
     sh0CodebookTexture.magFilter = THREE.NearestFilter;
     sh0CodebookTexture.needsUpdate = true;
+
+    // Set splatEncoding with the actual scale range from the codebook
+    // This ensures the render shader uses the same range for unpacking
+    this.splatEncoding = {
+      rgbMin: 0,
+      rgbMax: 1,
+      lnScaleMin,
+      lnScaleMax,
+    };
 
     // Create decode shader material
     const shaderCode = getShaders().videoDecodeUvec4;
@@ -997,6 +1011,9 @@ export class PackedSplats {
         scaleCodebook: { value: scaleCodebookTexture },
         sh0Codebook: { value: sh0CodebookTexture },
         splatCount: { value: metadata.count },
+        rgbMinMaxLnScaleMinMax: {
+          value: new THREE.Vector4(0, 1, lnScaleMin, lnScaleMax),
+        },
       },
     });
 
