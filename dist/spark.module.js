@@ -12881,8 +12881,8 @@ class VideoSplatMesh extends SplatMesh {
     const uScaleY = packScale(expectedScaleY);
     const uScaleZ = packScale(expectedScaleZ);
     console.log(`  Packed scales: X=${uScaleX}, Y=${uScaleY}, Z=${uScaleZ}`);
-    const expectedWord2 = posZf16 | uQuat0 << 16 | uQuat1 << 24;
-    const expectedWord3 = uScaleX | uScaleY << 8 | uScaleZ << 16 | uQuat2 << 24;
+    const expectedWord2 = (posZf16 | uQuat0 << 16 | uQuat1 << 24) >>> 0;
+    const expectedWord3 = (uScaleX | uScaleY << 8 | uScaleZ << 16 | uQuat2 << 24) >>> 0;
     console.log(
       `  Expected word2: 0x${expectedWord2.toString(16).padStart(8, "0")}`
     );
