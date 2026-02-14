@@ -198,7 +198,32 @@ export class VideoSplatMesh extends SplatMesh {
     this.numSplats = initialCount;
 
     const loadTime = performance.now() - loadStart;
-    console.log(`VideoSplatMesh loaded in ${loadTime.toFixed(0)}ms`);
+
+    // Log comprehensive load summary
+    console.log("[VideoSplatMesh] === Load Summary ===");
+    console.log(
+      `  Frames: ${this.totalFrames} @ ${this.fps}fps (${(this.totalFrames / this.fps).toFixed(2)}s)`,
+    );
+    console.log(`  Texture: ${this.videoWidth}x${this.videoHeight}`);
+    console.log(`  Tile size: ${metadata.tile_size}px`);
+    console.log(`  Max splat capacity: ${this.staticCount.toLocaleString()}`);
+    if (this.frameGaussianCounts) {
+      const minCount = Math.min(...this.frameGaussianCounts);
+      const maxCount = Math.max(...this.frameGaussianCounts);
+      console.log(
+        `  Dynamic counts: ${minCount.toLocaleString()} - ${maxCount.toLocaleString()} splats/frame`,
+      );
+      console.log(`  Frame counts: [${this.frameGaussianCounts.join(", ")}]`);
+    } else {
+      console.log(
+        `  Static count: ${this.staticCount.toLocaleString()} splats/frame`,
+      );
+    }
+    console.log(
+      `  Bounds: [${sparkMetadata.mins.map((v) => v.toFixed(3)).join(", ")}] to [${sparkMetadata.maxs.map((v) => v.toFixed(3)).join(", ")}]`,
+    );
+    console.log(`  Load time: ${loadTime.toFixed(0)}ms`);
+    console.log("[VideoSplatMesh] === Ready ===");
 
     return { loadTime };
   }
@@ -288,6 +313,10 @@ export class VideoSplatMesh extends SplatMesh {
     );
   }
 
+  // Logging state
+  private lastLoggedFrame = -1;
+  private frameDecodeCount = 0;
+
   /**
    * Decode a frame to GPU. Single path for all frame updates.
    */
@@ -300,9 +329,10 @@ export class VideoSplatMesh extends SplatMesh {
     // frameTexture is guaranteed to exist after uploadFrameRawWebGL
     if (!this.frameTexture) return;
 
-    const count = this.frameGaussianCounts?.[frameIndex] ?? this.staticCount;
-    this.packedSplats.updateVideoSplatCount(count);
-    this.numSplats = count;
+    const expectedCount =
+      this.frameGaussianCounts?.[frameIndex] ?? this.staticCount;
+    this.packedSplats.updateVideoSplatCount(expectedCount);
+    this.numSplats = expectedCount;
 
     this.packedSplats.updateFromVideoTextureGPU(
       renderer,
@@ -313,6 +343,21 @@ export class VideoSplatMesh extends SplatMesh {
     );
 
     this.updateVersion();
+    this.frameDecodeCount++;
+
+    // Log frame info (throttled to avoid spam)
+    if (frameIndex !== this.lastLoggedFrame) {
+      const hasDynamicCounts = this.frameGaussianCounts !== null;
+      console.log(
+        `[VideoSplatMesh] Frame ${frameIndex}/${this.totalFrames - 1}: ` +
+          `splats=${expectedCount.toLocaleString()} ` +
+          `(${hasDynamicCounts ? "dynamic" : "static"}) ` +
+          `texture=${this.videoWidth}x${this.videoHeight} ` +
+          `tile=${this.tileUVs ? "ready" : "missing"}`,
+      );
+      this.lastLoggedFrame = frameIndex;
+    }
+
     this.onFrameChange?.(this.currentFrameIndex, this.totalFrames);
   }
 

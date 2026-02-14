@@ -80,6 +80,8 @@ export declare class VideoSplatMesh extends SplatMesh {
      * Guarantees no color space conversion, no alpha premultiplication.
      */
     private uploadFrameRawWebGL;
+    private lastLoggedFrame;
+    private frameDecodeCount;
     /**
      * Decode a frame to GPU. Single path for all frame updates.
      */
