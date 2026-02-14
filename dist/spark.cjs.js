@@ -12654,18 +12654,33 @@ class VideoSplatMesh extends SplatMesh {
     console.log(
       `  Scale range: ln(${meta.lnScaleMin.toFixed(3)}) to ln(${meta.lnScaleMax.toFixed(3)})`
     );
-    const canvas = document.createElement("canvas");
-    canvas.width = this.videoWidth;
-    canvas.height = this.videoHeight;
-    const ctx = canvas.getContext("2d", {
-      colorSpace: "srgb",
-      willReadFrequently: true
-    });
-    if (!ctx) {
-      console.error("[Validate] Failed to get canvas 2D context");
-      return;
-    }
-    ctx.drawImage(bitmap, 0, 0);
+    const tempTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tempTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA8,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      bitmap
+    );
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      tempTex,
+      0
+    );
+    const readRawPixel = (px, py) => {
+      const pixel = new Uint8Array(4);
+      gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+      return { r: pixel[0], g: pixel[1], b: pixel[2], a: pixel[3], px, py };
+    };
     const tileSize = Math.round(
       this.tileUVs.means_l.u1 * this.videoWidth - this.tileUVs.means_l.u0 * this.videoWidth
     );
@@ -12676,8 +12691,7 @@ class VideoSplatMesh extends SplatMesh {
       const tileStartY = Math.round(tileUV.v0 * this.videoHeight);
       const px = tileStartX + tileX;
       const py = tileStartY + tileY;
-      const data = ctx.getImageData(px, py, 1, 1).data;
-      return { r: data[0], g: data[1], b: data[2], a: data[3], px, py };
+      return readRawPixel(px, py);
     };
     const meansL = readTilePixel(this.tileUVs.means_l);
     const meansU = readTilePixel(this.tileUVs.means_u);
@@ -13010,6 +13024,9 @@ class VideoSplatMesh extends SplatMesh {
     console.log(
       "[Validate] ═══════════════════════════════════════════════════"
     );
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fb);
+    gl.deleteTexture(tempTex);
   }
   dispose() {
     super.dispose();
