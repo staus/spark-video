@@ -117,8 +117,82 @@ export class VideoSplatMesh extends SplatMesh {
   onFrameChange: ((frameIndex: number, totalFrames: number) => void) | null =
     null;
 
+  // Current quaternion transform mode (for debugging)
+  private quatTransformMode = 0;
+
+  // Quaternion transform names for debugging UI
+  static readonly QUAT_TRANSFORM_NAMES = [
+    "identity",
+    "rotX+90",
+    "rotX-90",
+    "rotX+180",
+    "rotY+90",
+    "rotY-90",
+    "rotY+180",
+    "rotZ+90",
+    "rotZ-90",
+    "rotZ+180",
+    "swapXY",
+    "swapXZ",
+    "swapYZ",
+    "negX",
+    "negY",
+    "negZ",
+    "negW",
+    "negXY",
+    "negXZ",
+    "negYZ",
+    "rotX90+swapYZ",
+    "rotX-90+swapYZ",
+    "conjugate",
+    "blenderZ→Y (v1)",
+    "blenderZ→Y (v2)",
+    "rotX90+negZ",
+    "rotX-90+negZ",
+    "rotX90+negY",
+    "rotX-90+negY",
+    "WXYZ→XYZW",
+    "XYZW→WXYZ",
+    "cycleYZWX",
+  ];
+
   constructor(options: SplatMeshOptions = {}) {
     super(options);
+  }
+
+  /**
+   * Set the quaternion transform mode for debugging coordinate system issues.
+   * The transform is applied to each gaussian's rotation quaternion after decoding.
+   */
+  setQuatTransformMode(mode: number): void {
+    this.quatTransformMode = mode;
+    // Update the uniform in the GPU video mode material
+    // biome-ignore lint/suspicious/noExplicitAny: accessing private gpuVideoModeData
+    const gpuData = (this.packedSplats as any).gpuVideoModeData;
+    if (gpuData?.material?.uniforms?.quatTransformMode) {
+      gpuData.material.uniforms.quatTransformMode.value = mode;
+    }
+  }
+
+  /**
+   * Get the current quaternion transform mode.
+   */
+  getQuatTransformMode(): number {
+    return this.quatTransformMode;
+  }
+
+  /**
+   * Get the name of a quaternion transform mode.
+   */
+  static getQuatTransformName(mode: number): string {
+    return VideoSplatMesh.QUAT_TRANSFORM_NAMES[mode] ?? `unknown(${mode})`;
+  }
+
+  /**
+   * Get the total number of quaternion transform modes.
+   */
+  static getQuatTransformCount(): number {
+    return VideoSplatMesh.QUAT_TRANSFORM_NAMES.length;
   }
 
   /**

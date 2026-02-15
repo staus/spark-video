@@ -1014,6 +1014,7 @@ export class PackedSplats {
         rgbMinMaxLnScaleMinMax: {
           value: new THREE.Vector4(0, 1, lnScaleMin, lnScaleMax),
         },
+        quatTransformMode: { value: 0 },
       },
     });
 

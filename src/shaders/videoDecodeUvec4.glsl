@@ -39,11 +39,152 @@ uniform int splatCount;
 // vec4(rgbMin, rgbMax, lnScaleMin, lnScaleMax)
 uniform vec4 rgbMinMaxLnScaleMinMax;
 
+// Quaternion transform mode for debugging coordinate system issues
+// 0 = identity, 1+ = various axis swaps/rotations
+uniform int quatTransformMode;
+
 out uvec4 target;
 
 // Constants for quaternion decoding
 const float SQRT2 = 1.41421356237;
 const float SH_C0 = 0.28209479177387814;
+// Note: PI is already defined in splatDefines
+
+// Quaternion multiplication: result = a * b
+vec4 quatMul(vec4 a, vec4 b) {
+    return vec4(
+        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
+    );
+}
+
+// Apply quaternion transformation based on mode
+// Returns transformed quaternion (x, y, z, w)
+vec4 applyQuatTransform(vec4 q) {
+    // Pre-computed rotation quaternions
+    // rotX90 = rotation 90° around X axis
+    float s45 = 0.70710678118; // sin(45°) = cos(45°) = sqrt(2)/2
+
+    vec4 rotX90 = vec4(s45, 0.0, 0.0, s45);      // 90° around X
+    vec4 rotX180 = vec4(1.0, 0.0, 0.0, 0.0);     // 180° around X
+    vec4 rotX270 = vec4(s45, 0.0, 0.0, -s45);    // -90° around X
+    vec4 rotY90 = vec4(0.0, s45, 0.0, s45);      // 90° around Y
+    vec4 rotY180 = vec4(0.0, 1.0, 0.0, 0.0);     // 180° around Y
+    vec4 rotY270 = vec4(0.0, s45, 0.0, -s45);    // -90° around Y
+    vec4 rotZ90 = vec4(0.0, 0.0, s45, s45);      // 90° around Z
+    vec4 rotZ180 = vec4(0.0, 0.0, 1.0, 0.0);     // 180° around Z
+    vec4 rotZ270 = vec4(0.0, 0.0, s45, -s45);    // -90° around Z
+
+    vec4 result = q;
+
+    if (quatTransformMode == 0) {
+        // identity
+        result = q;
+    } else if (quatTransformMode == 1) {
+        // rotX+90
+        result = quatMul(rotX90, q);
+    } else if (quatTransformMode == 2) {
+        // rotX-90
+        result = quatMul(rotX270, q);
+    } else if (quatTransformMode == 3) {
+        // rotX+180
+        result = quatMul(rotX180, q);
+    } else if (quatTransformMode == 4) {
+        // rotY+90
+        result = quatMul(rotY90, q);
+    } else if (quatTransformMode == 5) {
+        // rotY-90
+        result = quatMul(rotY270, q);
+    } else if (quatTransformMode == 6) {
+        // rotY+180
+        result = quatMul(rotY180, q);
+    } else if (quatTransformMode == 7) {
+        // rotZ+90
+        result = quatMul(rotZ90, q);
+    } else if (quatTransformMode == 8) {
+        // rotZ-90
+        result = quatMul(rotZ270, q);
+    } else if (quatTransformMode == 9) {
+        // rotZ+180
+        result = quatMul(rotZ180, q);
+    } else if (quatTransformMode == 10) {
+        // Swap XY components
+        result = vec4(q.y, q.x, q.z, q.w);
+    } else if (quatTransformMode == 11) {
+        // Swap XZ components
+        result = vec4(q.z, q.y, q.x, q.w);
+    } else if (quatTransformMode == 12) {
+        // Swap YZ components
+        result = vec4(q.x, q.z, q.y, q.w);
+    } else if (quatTransformMode == 13) {
+        // Negate X
+        result = vec4(-q.x, q.y, q.z, q.w);
+    } else if (quatTransformMode == 14) {
+        // Negate Y
+        result = vec4(q.x, -q.y, q.z, q.w);
+    } else if (quatTransformMode == 15) {
+        // Negate Z
+        result = vec4(q.x, q.y, -q.z, q.w);
+    } else if (quatTransformMode == 16) {
+        // Negate W
+        result = vec4(q.x, q.y, q.z, -q.w);
+    } else if (quatTransformMode == 17) {
+        // Negate XY
+        result = vec4(-q.x, -q.y, q.z, q.w);
+    } else if (quatTransformMode == 18) {
+        // Negate XZ
+        result = vec4(-q.x, q.y, -q.z, q.w);
+    } else if (quatTransformMode == 19) {
+        // Negate YZ
+        result = vec4(q.x, -q.y, -q.z, q.w);
+    } else if (quatTransformMode == 20) {
+        // rotX+90, then swap YZ
+        result = quatMul(rotX90, q);
+        result = vec4(result.x, result.z, result.y, result.w);
+    } else if (quatTransformMode == 21) {
+        // rotX-90, then swap YZ
+        result = quatMul(rotX270, q);
+        result = vec4(result.x, result.z, result.y, result.w);
+    } else if (quatTransformMode == 22) {
+        // Conjugate (invert rotation)
+        result = vec4(-q.x, -q.y, -q.z, q.w);
+    } else if (quatTransformMode == 23) {
+        // Blender Z-up to Y-up: swap Y and Z, negate new Z
+        result = vec4(q.x, q.z, -q.y, q.w);
+    } else if (quatTransformMode == 24) {
+        // Blender Z-up to Y-up variant 2
+        result = vec4(q.x, -q.z, q.y, q.w);
+    } else if (quatTransformMode == 25) {
+        // rotX90 then negate Z
+        result = quatMul(rotX90, q);
+        result = vec4(result.x, result.y, -result.z, result.w);
+    } else if (quatTransformMode == 26) {
+        // rotX-90 then negate Z
+        result = quatMul(rotX270, q);
+        result = vec4(result.x, result.y, -result.z, result.w);
+    } else if (quatTransformMode == 27) {
+        // rotX90 then negate Y
+        result = quatMul(rotX90, q);
+        result = vec4(result.x, -result.y, result.z, result.w);
+    } else if (quatTransformMode == 28) {
+        // rotX-90 then negate Y
+        result = quatMul(rotX270, q);
+        result = vec4(result.x, -result.y, result.z, result.w);
+    } else if (quatTransformMode == 29) {
+        // WXYZ to XYZW reorder (different quaternion conventions)
+        result = vec4(q.w, q.x, q.y, q.z);
+    } else if (quatTransformMode == 30) {
+        // XYZW to WXYZ reorder
+        result = vec4(q.y, q.z, q.w, q.x);
+    } else if (quatTransformMode == 31) {
+        // Full cycle reorder YZWX
+        result = vec4(q.z, q.w, q.x, q.y);
+    }
+
+    return normalize(result);
+}
 
 // Sample a tile at the given splat index
 vec4 sampleTile(vec4 tileUV, int splatIndex) {
@@ -189,6 +330,9 @@ void main() {
         vec4 quaternion = decodeQuaternion(splatIndex);
         vec3 scales = decodeScales(splatIndex);
         vec4 rgba = decodeRGBA(splatIndex);
+
+        // Apply quaternion transformation (for coordinate system debugging)
+        quaternion = applyQuatTransform(quaternion);
 
         // Pack into Spark's uvec4 format using dynamic encoding range
         target = packSplatEncoding(center, scales, quaternion, rgba, rgbMinMaxLnScaleMinMax);

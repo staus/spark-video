@@ -63,7 +63,26 @@ export declare class VideoSplatMesh extends SplatMesh {
     private lastFrameTime;
     private accumulatedTime;
     onFrameChange: ((frameIndex: number, totalFrames: number) => void) | null;
+    private quatTransformMode;
+    static readonly QUAT_TRANSFORM_NAMES: string[];
     constructor(options?: SplatMeshOptions);
+    /**
+     * Set the quaternion transform mode for debugging coordinate system issues.
+     * The transform is applied to each gaussian's rotation quaternion after decoding.
+     */
+    setQuatTransformMode(mode: number): void;
+    /**
+     * Get the current quaternion transform mode.
+     */
+    getQuatTransformMode(): number;
+    /**
+     * Get the name of a quaternion transform mode.
+     */
+    static getQuatTransformName(mode: number): string;
+    /**
+     * Get the total number of quaternion transform modes.
+     */
+    static getQuatTransformCount(): number;
     /**
      * Check if ImageDecoder API is available
      */
