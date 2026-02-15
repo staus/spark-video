@@ -39,8 +39,6 @@ export interface Video4DGSMetadata {
   video: {
     frames: number;
     fps: number;
-    source_duration?: number; // Duration of source animation in seconds
-    source_fps?: number; // Intended playback fps based on source timing
   };
   sog: {
     count: number;
@@ -58,7 +56,6 @@ export interface Video4DGSMetadata {
   };
   "4dgs"?: {
     frame_gaussian_counts?: number[];
-    frame_times?: number[]; // Time values for each frame
   };
 }
 
@@ -93,14 +90,6 @@ export class VideoSplatMesh extends SplatMesh {
   // Texture created directly from ImageBitmap (no canvas color conversion)
   private frameTexture: THREE.Texture | null = null;
 
-  // Dual-texture support for interpolation
-  private frameTextureA: THREE.Texture | null = null;
-  private frameTextureB: THREE.Texture | null = null;
-  private glTextureA: WebGLTexture | null = null;
-  private glTextureB: WebGLTexture | null = null;
-  private currentFrameA = -1; // Track which frame is loaded in texture A
-  private currentFrameB = -1; // Track which frame is loaded in texture B
-
   // Tile UV coordinates for GPU decode
   private tileUVs: GPUVideoTileUVs | null = null;
 
@@ -124,24 +113,8 @@ export class VideoSplatMesh extends SplatMesh {
   private lastFrameTime = 0;
   private accumulatedTime = 0;
 
-  // Interpolation state
-  interpolationEnabled = true;
-  private sourceDuration = 1; // Duration in seconds from source animation
-  private frameTimes: number[] | null = null; // Time value for each frame
-  private currentPlaybackTime = 0; // Current time in seconds
-  interpAlpha = 0; // Interpolation factor between frames (0-1)
-
   // Callback for frame changes (optional, for UI updates)
   onFrameChange: ((frameIndex: number, totalFrames: number) => void) | null =
-    null;
-
-  // Callback for interpolation updates (optional, for UI)
-  onInterpolationUpdate:
-    | ((alpha: number, frameA: number, frameB: number, time: number) => void)
-    | null = null;
-
-  // Callback for time changes during interpolated playback (optional, for UI)
-  onTimeChange: ((currentTime: number, totalDuration: number) => void) | null =
     null;
 
   constructor(options: SplatMeshOptions = {}) {
@@ -218,17 +191,6 @@ export class VideoSplatMesh extends SplatMesh {
     this.staticCount = metadata.sog.count;
     if (metadata["4dgs"]?.frame_gaussian_counts) {
       this.frameGaussianCounts = metadata["4dgs"].frame_gaussian_counts;
-    }
-
-    // Store interpolation metadata
-    if (metadata.video.source_duration) {
-      this.sourceDuration = metadata.video.source_duration;
-    } else {
-      // Fallback: use frame count / fps
-      this.sourceDuration = this.totalFrames / this.fps;
-    }
-    if (metadata["4dgs"]?.frame_times) {
-      this.frameTimes = metadata["4dgs"].frame_times;
     }
 
     // Extract position bounds from SOG means metadata
@@ -495,247 +457,6 @@ export class VideoSplatMesh extends SplatMesh {
 
   getFPS(): number {
     return this.fps;
-  }
-
-  getSourceDuration(): number {
-    return this.sourceDuration;
-  }
-
-  getPlaybackTime(): number {
-    return this.currentPlaybackTime;
-  }
-
-  /**
-   * Upload a frame to texture A for dual-frame interpolation.
-   */
-  private uploadFrameToTextureA(
-    renderer: THREE.WebGLRenderer,
-    frameIndex: number,
-  ): void {
-    if (frameIndex < 0 || frameIndex >= this.frameData.length) return;
-    if (frameIndex === this.currentFrameA) return; // Already loaded
-
-    const bitmap = this.frameData[frameIndex];
-    const gl = renderer.getContext() as WebGL2RenderingContext;
-
-    // Create texture on first use
-    if (!this.frameTextureA) {
-      this.frameTextureA = new THREE.Texture();
-      this.frameTextureA.minFilter = THREE.NearestFilter;
-      this.frameTextureA.magFilter = THREE.NearestFilter;
-      this.frameTextureA.generateMipmaps = false;
-      this.frameTextureA.colorSpace = THREE.NoColorSpace;
-
-      this.glTextureA = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, this.glTextureA);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-      const texProps = renderer.properties.get(this.frameTextureA) as {
-        __webglTexture: WebGLTexture | null;
-        __webglInit: boolean;
-      };
-      texProps.__webglTexture = this.glTextureA;
-      texProps.__webglInit = true;
-    }
-
-    gl.bindTexture(gl.TEXTURE_2D, this.glTextureA);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA8,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      bitmap,
-    );
-
-    this.currentFrameA = frameIndex;
-  }
-
-  /**
-   * Upload a frame to texture B for dual-frame interpolation.
-   */
-  private uploadFrameToTextureB(
-    renderer: THREE.WebGLRenderer,
-    frameIndex: number,
-  ): void {
-    if (frameIndex < 0 || frameIndex >= this.frameData.length) return;
-    if (frameIndex === this.currentFrameB) return; // Already loaded
-
-    const bitmap = this.frameData[frameIndex];
-    const gl = renderer.getContext() as WebGL2RenderingContext;
-
-    // Create texture on first use
-    if (!this.frameTextureB) {
-      this.frameTextureB = new THREE.Texture();
-      this.frameTextureB.minFilter = THREE.NearestFilter;
-      this.frameTextureB.magFilter = THREE.NearestFilter;
-      this.frameTextureB.generateMipmaps = false;
-      this.frameTextureB.colorSpace = THREE.NoColorSpace;
-
-      this.glTextureB = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, this.glTextureB);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-      const texProps = renderer.properties.get(this.frameTextureB) as {
-        __webglTexture: WebGLTexture | null;
-        __webglInit: boolean;
-      };
-      texProps.__webglTexture = this.glTextureB;
-      texProps.__webglInit = true;
-    }
-
-    gl.bindTexture(gl.TEXTURE_2D, this.glTextureB);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA8,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      bitmap,
-    );
-
-    this.currentFrameB = frameIndex;
-  }
-
-  /**
-   * Interpolated tick - advances playback time and decodes interpolated frames.
-   * Uses source_duration for correct timing instead of frame-based stepping.
-   * Returns true if the display was updated.
-   */
-  tickInterpolated(
-    renderer: THREE.WebGLRenderer,
-    now: number = performance.now(),
-  ): boolean {
-    if (!this.isPlaying || !this.tileUVs) {
-      return false;
-    }
-
-    // Initialize timing on first tick
-    if (this.lastFrameTime === 0) {
-      this.lastFrameTime = now;
-      this.currentPlaybackTime = 0;
-    }
-
-    // Calculate delta time in seconds
-    const deltaMs = now - this.lastFrameTime;
-    this.lastFrameTime = now;
-    const deltaSec = deltaMs / 1000;
-
-    // Advance playback time
-    this.currentPlaybackTime += deltaSec;
-
-    // Loop back to start
-    if (this.currentPlaybackTime >= this.sourceDuration) {
-      this.currentPlaybackTime = this.currentPlaybackTime % this.sourceDuration;
-    }
-
-    // Calculate which frames to interpolate between
-    const timeNormalized = this.currentPlaybackTime / this.sourceDuration;
-    const frameFloat = timeNormalized * (this.totalFrames - 1);
-    const frameA = Math.floor(frameFloat);
-    const frameB = Math.min(frameA + 1, this.totalFrames - 1);
-    this.interpAlpha = frameFloat - frameA;
-
-    // Clamp frame indices
-    const clampedFrameA = Math.max(0, Math.min(frameA, this.totalFrames - 1));
-    const clampedFrameB = Math.max(0, Math.min(frameB, this.totalFrames - 1));
-
-    // Upload frames to dual textures
-    this.uploadFrameToTextureA(renderer, clampedFrameA);
-    this.uploadFrameToTextureB(renderer, clampedFrameB);
-
-    // Check if we have both textures ready
-    if (!this.frameTextureA || !this.frameTextureB) {
-      return false;
-    }
-
-    // Use max gaussian count from both frames for interpolation
-    const countA =
-      this.frameGaussianCounts?.[clampedFrameA] ?? this.staticCount;
-    const countB =
-      this.frameGaussianCounts?.[clampedFrameB] ?? this.staticCount;
-    const maxCount = Math.max(countA, countB);
-    this.packedSplats.updateVideoSplatCount(maxCount);
-    this.numSplats = maxCount;
-
-    // Decode with interpolation
-    this.packedSplats.updateFromDualVideoTextureGPU(
-      renderer,
-      this.frameTextureA,
-      this.frameTextureB,
-      this.interpAlpha,
-      this.tileUVs,
-      this.videoWidth,
-      this.videoHeight,
-    );
-
-    this.updateVersion();
-    this.currentFrameIndex = clampedFrameA;
-
-    // Callbacks
-    this.onFrameChange?.(this.currentFrameIndex, this.totalFrames);
-    this.onInterpolationUpdate?.(
-      this.interpAlpha,
-      clampedFrameA,
-      clampedFrameB,
-      this.currentPlaybackTime,
-    );
-    this.onTimeChange?.(this.currentPlaybackTime, this.sourceDuration);
-
-    return true;
-  }
-
-  /**
-   * Seek to a specific time in seconds.
-   */
-  seekToTime(timeSeconds: number, renderer: THREE.WebGLRenderer) {
-    this.currentPlaybackTime = Math.max(
-      0,
-      Math.min(timeSeconds, this.sourceDuration),
-    );
-
-    // Calculate frames and alpha
-    const timeNormalized = this.currentPlaybackTime / this.sourceDuration;
-    const frameFloat = timeNormalized * (this.totalFrames - 1);
-    const frameA = Math.floor(frameFloat);
-    const frameB = Math.min(frameA + 1, this.totalFrames - 1);
-    this.interpAlpha = frameFloat - frameA;
-
-    if (this.interpolationEnabled && this.tileUVs) {
-      this.uploadFrameToTextureA(renderer, frameA);
-      this.uploadFrameToTextureB(renderer, frameB);
-
-      if (this.frameTextureA && this.frameTextureB) {
-        const countA = this.frameGaussianCounts?.[frameA] ?? this.staticCount;
-        const countB = this.frameGaussianCounts?.[frameB] ?? this.staticCount;
-        this.packedSplats.updateVideoSplatCount(Math.max(countA, countB));
-        this.packedSplats.updateFromDualVideoTextureGPU(
-          renderer,
-          this.frameTextureA,
-          this.frameTextureB,
-          this.interpAlpha,
-          this.tileUVs,
-          this.videoWidth,
-          this.videoHeight,
-        );
-        this.updateVersion();
-      }
-    } else {
-      // Non-interpolated fallback
-      this.decodeFrame(renderer, frameA);
-    }
   }
 
   /**
@@ -1280,19 +1001,6 @@ export class VideoSplatMesh extends SplatMesh {
     // glTexture is deleted by THREE.js when frameTexture.dispose() is called
     // (we injected it into texture properties)
     this.glTexture = null;
-
-    // Dispose dual-texture resources
-    if (this.frameTextureA) {
-      this.frameTextureA.dispose();
-      this.frameTextureA = null;
-    }
-    if (this.frameTextureB) {
-      this.frameTextureB.dispose();
-      this.frameTextureB = null;
-    }
-    this.glTextureA = null;
-    this.glTextureB = null;
-
     for (const bitmap of this.frameData) {
       bitmap.close();
     }

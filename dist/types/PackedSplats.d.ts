@@ -126,12 +126,6 @@ export declare class PackedSplats {
      */
     updateFromVideoTextureGPU(renderer: THREE.WebGLRenderer, videoTexture: THREE.Texture, tileUVs: GPUVideoTileUVs, videoWidth: number, videoHeight: number): void;
     /**
-     * Update splat data from two video textures with interpolation.
-     * Blends between frame A and frame B based on interpAlpha (0-1).
-     * Used for smooth playback between keyframes.
-     */
-    updateFromDualVideoTextureGPU(renderer: THREE.WebGLRenderer, videoTextureA: THREE.Texture, videoTextureB: THREE.Texture, interpAlpha: number, tileUVs: GPUVideoTileUVs, videoWidth: number, videoHeight: number): void;
-    /**
      * Update the splat count for GPU video mode
      * Call this before updateFromVideoTextureGPU when frame has different count
      */
