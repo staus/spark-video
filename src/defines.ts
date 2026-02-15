@@ -1,9 +1,10 @@
-// LN_SCALE_MIN..LN_SCALE_MAX define the internal scale range of for Gsplats.
+// LN_SCALE_MIN..LN_SCALE_MAX define the internal scale range of for Gsplats,
+// covering approx 0.0001..8000 in range with discrete steps 7% apart.
 // The value "0" is reserved for truly flat scales, indicating a 2DGS.
 // If these values are changed, the corresponding values in splatDefines.glsl
 // must also be updated to match.
 
-export const LN_SCALE_MIN = -36.0;
+export const LN_SCALE_MIN = -12.0;
 export const LN_SCALE_MAX = 9.0;
 export const SCALE_MIN = Math.exp(LN_SCALE_MIN);
 export const SCALE_MAX = Math.exp(LN_SCALE_MAX);

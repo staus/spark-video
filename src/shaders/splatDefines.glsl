@@ -1,4 +1,4 @@
-const float LN_SCALE_MIN = -36.0;
+const float LN_SCALE_MIN = -12.0;
 const float LN_SCALE_MAX = 9.0;
 
 const uint SPLAT_TEX_WIDTH_BITS = 11u;
