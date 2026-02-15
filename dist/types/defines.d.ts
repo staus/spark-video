@@ -1,4 +1,4 @@
-export declare const LN_SCALE_MIN = -12;
+export declare const LN_SCALE_MIN = -36;
 export declare const LN_SCALE_MAX = 9;
 export declare const SCALE_MIN: number;
 export declare const SCALE_MAX: number;
