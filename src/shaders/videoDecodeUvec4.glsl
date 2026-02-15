@@ -43,6 +43,10 @@ uniform vec4 rgbMinMaxLnScaleMinMax;
 // 0 = identity, 1+ = various axis swaps/rotations
 uniform int quatTransformMode;
 
+// Scale filtering - set to 0.0 to disable, otherwise max scale in world units
+// Gaussians with any axis larger than this will be made invisible
+uniform float maxScaleFilter;
+
 out uvec4 target;
 
 // Constants for quaternion decoding
@@ -333,6 +337,14 @@ void main() {
 
         // Apply quaternion transformation (for coordinate system debugging)
         quaternion = applyQuatTransform(quaternion);
+
+        // Scale filtering - hide gaussians larger than maxScaleFilter
+        if (maxScaleFilter > 0.0) {
+            float maxAxis = max(scales.x, max(scales.y, scales.z));
+            if (maxAxis > maxScaleFilter) {
+                rgba.a = 0.0;  // Make invisible
+            }
+        }
 
         // Pack into Spark's uvec4 format using dynamic encoding range
         target = packSplatEncoding(center, scales, quaternion, rgba, rgbMinMaxLnScaleMinMax);

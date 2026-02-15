@@ -64,6 +64,7 @@ export declare class VideoSplatMesh extends SplatMesh {
     private accumulatedTime;
     onFrameChange: ((frameIndex: number, totalFrames: number) => void) | null;
     private quatTransformMode;
+    private maxScaleFilter;
     static readonly QUAT_TRANSFORM_NAMES: string[];
     constructor(options?: SplatMeshOptions);
     /**
@@ -83,6 +84,15 @@ export declare class VideoSplatMesh extends SplatMesh {
      * Get the total number of quaternion transform modes.
      */
     static getQuatTransformCount(): number;
+    /**
+     * Set the max scale filter. Gaussians with any axis larger than this will be hidden.
+     * Set to 0 to disable filtering.
+     */
+    setMaxScaleFilter(maxScale: number): void;
+    /**
+     * Get the current max scale filter value.
+     */
+    getMaxScaleFilter(): number;
     /**
      * Check if ImageDecoder API is available
      */

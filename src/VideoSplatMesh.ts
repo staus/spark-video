@@ -120,6 +120,9 @@ export class VideoSplatMesh extends SplatMesh {
   // Current quaternion transform mode (for debugging)
   private quatTransformMode = 0;
 
+  // Max scale filter (0 = disabled, >0 = max scale in world units)
+  private maxScaleFilter = 0.0;
+
   // Quaternion transform names for debugging UI
   static readonly QUAT_TRANSFORM_NAMES = [
     "identity",
@@ -193,6 +196,27 @@ export class VideoSplatMesh extends SplatMesh {
    */
   static getQuatTransformCount(): number {
     return VideoSplatMesh.QUAT_TRANSFORM_NAMES.length;
+  }
+
+  /**
+   * Set the max scale filter. Gaussians with any axis larger than this will be hidden.
+   * Set to 0 to disable filtering.
+   */
+  setMaxScaleFilter(maxScale: number): void {
+    this.maxScaleFilter = maxScale;
+    // Update the uniform in the GPU video mode material
+    // biome-ignore lint/suspicious/noExplicitAny: accessing private gpuVideoModeData
+    const gpuData = (this.packedSplats as any).gpuVideoModeData;
+    if (gpuData?.material?.uniforms?.maxScaleFilter) {
+      gpuData.material.uniforms.maxScaleFilter.value = maxScale;
+    }
+  }
+
+  /**
+   * Get the current max scale filter value.
+   */
+  getMaxScaleFilter(): number {
+    return this.maxScaleFilter;
   }
 
   /**

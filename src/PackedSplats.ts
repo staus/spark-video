@@ -1015,6 +1015,7 @@ export class PackedSplats {
           value: new THREE.Vector4(0, 1, lnScaleMin, lnScaleMax),
         },
         quatTransformMode: { value: 0 },
+        maxScaleFilter: { value: 0.0 }, // 0 = disabled, >0 = max scale in world units
       },
     });
 
