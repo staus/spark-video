@@ -1,22 +1,23 @@
 <p align="center">
 
-  ![Spark logo](https://github.com/user-attachments/assets/5287631a-083c-4c86-80f6-4dca24aa263f#gh-light-mode-only)
-  ![Spark logo](https://github.com/user-attachments/assets/91e8d74b-84a5-4073-bd72-d7228f948dc6#gh-dark-mode-only)
+![Spark logo](https://github.com/user-attachments/assets/5287631a-083c-4c86-80f6-4dca24aa263f#gh-light-mode-only)
+![Spark logo](https://github.com/user-attachments/assets/91e8d74b-84a5-4073-bd72-d7228f948dc6#gh-dark-mode-only)
 
   <h3 align="center">An advanced 3D Gaussian Splatting renderer for THREE.js</h3>
   <div align="center">
 
-  [Features](#features) -
-  [Getting Started](#getting-started) -
-  <a href="https://sparkjs.dev/">Documentation</a> -
-  <a href="https://sparkjs.dev/">FAQ</a>
+[Features](#features) -
+[Getting Started](#getting-started) -
+<a href="https://sparkjs.dev/">Documentation</a> -
+<a href="https://sparkjs.dev/">FAQ</a>
+
   </div>
   </p>
 
    <div align="center">
 
-  [![License](https://img.shields.io/badge/license-MIT-%23d43e4c)](https://github.com/sparkjsdev/spark/blob/main/LICENSE)
-  [![npm version](https://img.shields.io/npm/v/@sparkjsdev/spark?color=d43e4c)](https://www.npmjs.com/package/@sparkjsdev/spark)
+[![License](https://img.shields.io/badge/license-MIT-%23d43e4c)](https://github.com/sparkjsdev/spark/blob/main/LICENSE)
+[![npm version](https://img.shields.io/npm/v/@sparkjsdev/spark?color=d43e4c)](https://www.npmjs.com/package/@sparkjsdev/spark)
 
   </div>
 
@@ -46,9 +47,12 @@ Check out all the [examples](https://sparkjs.dev/examples/)
 
 Copy the following code into an `index.html` file.
 
-
 ```html
-<style> body {margin: 0;} </style>
+<style>
+  body {
+    margin: 0;
+  }
+</style>
 <script type="importmap">
   {
     "imports": {
@@ -62,10 +66,15 @@ Copy the following code into an `index.html` file.
   import { SplatMesh } from "@sparkjsdev/spark";
 
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+  const camera = new THREE.PerspectiveCamera(
+    60,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    1000,
+  );
   const renderer = new THREE.WebGLRenderer();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  document.body.appendChild(renderer.domElement)
+  document.body.appendChild(renderer.domElement);
 
   const splatURL = "https://sparkjs.dev/assets/splats/butterfly.spz";
   const butterfly = new SplatMesh({ url: splatURL });
@@ -92,7 +101,7 @@ Remix the [glitch starter template](https://glitch.com/edit/#!/sparkjs-dev)
     "imports": {
       "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.178.0/three.module.js",
       "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/0.1.9/spark.module.js"
-     }
+    }
   }
 </script>
 ```
@@ -108,21 +117,26 @@ npm install @sparkjsdev/spark
 Install [Rust](https://www.rust-lang.org/tools/install) if it's not already installed in your machine.
 
 Next, build Spark by running:
+
 ```
 npm install
 npm run build
 ```
+
 This will first build the Rust Wasm component (can be invoked via `npm run build:wasm`), then Spark itself (`npm run build`).
 
 The examples fetch assets from a remote URL. This step is optional, but offline development and faster loading times are possible if you download and cache the assets files locally with the following command:
+
 ```
 npm run assets:download
 ```
 
 Once you've built Spark and optionally downloaded the assets, you can now run the examples:
+
 ```
 npm start
 ```
+
 This will run a dev server by default at [http://localhost:8080/](http://localhost:8080/). Check the console log output to see if yours is served on a different port.
 
 ## Develop and contribute to the project
@@ -130,6 +144,7 @@ This will run a dev server by default at [http://localhost:8080/](http://localho
 ### Build troubleshooting
 
 First try cleaning all the build files and re-building everything:
+
 ```
 npm run clean
 npm install
@@ -210,3 +225,30 @@ npm run site:deploy
 To compress a splat to [spz](https://scaniverse.com/spz) run
 
 `npm run assets:compress <file or URL to ply>`
+
+## Fork Customizations (sharp-gaussian-splat-host)
+
+This fork includes modifications for 4D Gaussian Splat (4DGS) video playback support.
+
+### Scale Range Extension
+
+The internal log-scale range has been extended to support 4DGS data which contains very small gaussians for fine details:
+
+| Setting        | Original | Modified |
+| -------------- | -------- | -------- |
+| `LN_SCALE_MIN` | -12.0    | -36.0    |
+
+Files modified:
+
+- `src/defines.ts` - TypeScript constant
+- `src/shaders/splatDefines.glsl` - GLSL shader constant
+
+This allows scales as small as `exp(-36) ≈ 2.3e-16` (was `exp(-12) ≈ 6e-6`). Without this change, ~27% of fine-detail gaussians in 4DGS data get clamped to incorrect sizes.
+
+### Video Decode Extensions
+
+GPU-accelerated video splat decoding:
+
+- `src/shaders/videoDecodeUvec4.glsl` - GPU fragment shader for SOG tile decode
+- `src/PackedSplats.ts` - `initVideoModeGPU()`, `updateFromVideoTextureGPU()`
+- `src/VideoSplatMesh.ts` - High-level video splat mesh class
