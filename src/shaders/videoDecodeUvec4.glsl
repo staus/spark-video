@@ -20,6 +20,7 @@ uniform vec4 tileUV_means_u;
 uniform vec4 tileUV_quats;
 uniform vec4 tileUV_scales;
 uniform vec4 tileUV_sh0;
+uniform vec4 tileUV_t_scale;
 
 // Tile size in pixels (square)
 uniform float tileSize;
@@ -28,9 +29,10 @@ uniform float tileSize;
 uniform vec3 positionMins;
 uniform vec3 positionMaxs;
 
-// Codebook textures (256x1, RG32F format - stores (logScale, sh0Value))
+// Codebook textures (256x1, R32F format)
 uniform sampler2D scaleCodebook;   // Lookup: index -> log scale value
 uniform sampler2D sh0Codebook;     // Lookup: index -> SH0 value
+uniform sampler2D tScaleCodebook;  // Lookup: index -> t_scale value (linear space)
 
 // Splat count
 uniform int splatCount;
@@ -46,6 +48,13 @@ uniform int quatTransformMode;
 // Scale filtering - set to 0.0 to disable, otherwise max scale in world units
 // Gaussians with any axis larger than this will be made invisible
 uniform float maxScaleFilter;
+
+// Static/dynamic visualization mode
+// 0 = off (normal rendering), 1 = on (static gaussians shown in green)
+uniform int staticVizMode;
+// t_scale threshold for static classification
+// Gaussians with t_scale >= threshold are considered static
+uniform float staticThreshold;
 
 out uvec4 target;
 
@@ -321,6 +330,20 @@ vec4 decodeRGBA(int splatIndex) {
     return vec4(clamp(colorR, 0.0, 1.0), clamp(colorG, 0.0, 1.0), clamp(colorB, 0.0, 1.0), opacity);
 }
 
+// Decode t_scale (temporal scale) from codebook lookup
+// Returns the linear t_scale value indicating how "static" this gaussian is
+// Large values = visible across many frames = STATIC
+// Small values = visible briefly = DYNAMIC
+float decodeTScale(int splatIndex) {
+    vec4 tScaleRaw = sampleTile(tileUV_t_scale, splatIndex);
+
+    // Get codebook index from R channel (G, B unused)
+    float idx = floor(tScaleRaw.r * 255.0 + 0.5);
+
+    // Look up t_scale value from codebook (stored as R32F, already in linear space)
+    return texture(tScaleCodebook, vec2((idx + 0.5) / 256.0, 0.5)).r;
+}
+
 void main() {
     // Calculate which splat this fragment corresponds to
     int targetIndex = int(targetLayer << SPLAT_TEX_LAYER_BITS) +
@@ -344,6 +367,17 @@ void main() {
             if (maxAxis > maxScaleFilter) {
                 rgba.a = 0.0;  // Make invisible
             }
+        }
+
+        // Static/dynamic visualization mode
+        // When enabled, colors static gaussians (t_scale >= threshold) in green
+        if (staticVizMode == 1) {
+            float tScale = decodeTScale(splatIndex);
+            if (tScale >= staticThreshold) {
+                // STATIC: render in green
+                rgba.rgb = vec3(0.2, 0.8, 0.2);
+            }
+            // DYNAMIC: keep natural color
         }
 
         // Pack into Spark's uvec4 format using dynamic encoding range

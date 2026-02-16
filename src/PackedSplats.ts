@@ -960,6 +960,25 @@ export class PackedSplats {
     sh0CodebookTexture.magFilter = THREE.NearestFilter;
     sh0CodebookTexture.needsUpdate = true;
 
+    // Create t_scale codebook texture (256x1, R32F format)
+    // Stores t_scale values (in linear space) for static/dynamic classification
+    const tScaleData = new Float32Array(256);
+    if (metadata.tScaleCodebook) {
+      for (let i = 0; i < 256; i++) {
+        tScaleData[i] = metadata.tScaleCodebook[i] ?? 0;
+      }
+    }
+    const tScaleCodebookTexture = new THREE.DataTexture(
+      tScaleData,
+      256,
+      1,
+      THREE.RedFormat,
+      THREE.FloatType,
+    );
+    tScaleCodebookTexture.minFilter = THREE.NearestFilter;
+    tScaleCodebookTexture.magFilter = THREE.NearestFilter;
+    tScaleCodebookTexture.needsUpdate = true;
+
     // Set splatEncoding with the actual scale range from the codebook
     // This ensures the render shader uses the same range for unpacking
     this.splatEncoding = {
@@ -993,6 +1012,7 @@ export class PackedSplats {
         tileUV_quats: { value: new THREE.Vector4(0, 0, 0, 0) },
         tileUV_scales: { value: new THREE.Vector4(0, 0, 0, 0) },
         tileUV_sh0: { value: new THREE.Vector4(0, 0, 0, 0) },
+        tileUV_t_scale: { value: new THREE.Vector4(0, 0, 0, 0) },
         tileSize: { value: tileSize },
         positionMins: {
           value: new THREE.Vector3(
@@ -1010,12 +1030,15 @@ export class PackedSplats {
         },
         scaleCodebook: { value: scaleCodebookTexture },
         sh0Codebook: { value: sh0CodebookTexture },
+        tScaleCodebook: { value: tScaleCodebookTexture },
         splatCount: { value: metadata.count },
         rgbMinMaxLnScaleMinMax: {
           value: new THREE.Vector4(0, 1, lnScaleMin, lnScaleMax),
         },
         quatTransformMode: { value: 0 },
         maxScaleFilter: { value: 0.0 }, // 0 = disabled, >0 = max scale in world units
+        staticVizMode: { value: 0 }, // 0 = off, 1 = show static gaussians in green
+        staticThreshold: { value: 0.5 }, // t_scale threshold for static classification
       },
     });
 
@@ -1024,6 +1047,7 @@ export class PackedSplats {
       tileSize,
       scaleCodebookTexture,
       sh0CodebookTexture,
+      tScaleCodebookTexture,
       material,
       positionMins: metadata.mins,
       positionMaxs: metadata.maxs,
@@ -1090,6 +1114,14 @@ export class PackedSplats {
       tileUVs.sh0.u1,
       tileUVs.sh0.v1,
     );
+    if (tileUVs.t_scale) {
+      material.uniforms.tileUV_t_scale.value.set(
+        tileUVs.t_scale.u0,
+        tileUVs.t_scale.v0,
+        tileUVs.t_scale.u1,
+        tileUVs.t_scale.v1,
+      );
+    }
 
     // Render to packed splat texture
     const renderState = this.saveRenderState(renderer);
@@ -1160,6 +1192,7 @@ export type SOGVideoMetadata = {
   maxs: [number, number, number];
   scaleCodebook: number[];
   sh0Codebook: number[];
+  tScaleCodebook?: number[]; // Optional: t_scale codebook for static/dynamic classification
 };
 
 /**
@@ -1194,6 +1227,7 @@ type GPUVideoModeData = {
   tileSize: number;
   scaleCodebookTexture: THREE.DataTexture;
   sh0CodebookTexture: THREE.DataTexture;
+  tScaleCodebookTexture: THREE.DataTexture;
   material: THREE.RawShaderMaterial;
   positionMins: [number, number, number];
   positionMaxs: [number, number, number];
@@ -1218,6 +1252,7 @@ export type GPUVideoTileUVs = {
   quats: GPUVideoTileUV;
   scales: GPUVideoTileUV;
   sh0: GPUVideoTileUV;
+  t_scale?: GPUVideoTileUV; // Optional: t_scale tile for static/dynamic classification
 };
 
 // =============================================

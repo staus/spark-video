@@ -53,9 +53,13 @@ export interface Video4DGSMetadata {
     sh0: {
       codebook: number[];
     };
+    t_scale?: {
+      codebook: number[];
+    };
   };
   "4dgs"?: {
     frame_gaussian_counts?: number[];
+    t_scale_range?: [number, number]; // [min, max] t_scale values for threshold UI
   };
 }
 
@@ -122,6 +126,13 @@ export class VideoSplatMesh extends SplatMesh {
 
   // Max scale filter (0 = disabled, >0 = max scale in world units)
   private maxScaleFilter = 0.0;
+
+  // Static/dynamic visualization mode (0 = off, 1 = on)
+  private staticVizMode = 0;
+  // t_scale threshold for static classification
+  private staticThreshold = 0.5;
+  // t_scale range from metadata (for UI slider)
+  private tScaleRange: [number, number] = [0, 1];
 
   // Quaternion transform names for debugging UI
   static readonly QUAT_TRANSFORM_NAMES = [
@@ -220,6 +231,54 @@ export class VideoSplatMesh extends SplatMesh {
   }
 
   /**
+   * Enable/disable static visualization mode.
+   * When enabled, static gaussians (t_scale >= threshold) are rendered in green.
+   */
+  setStaticVizMode(enabled: boolean): void {
+    this.staticVizMode = enabled ? 1 : 0;
+    // biome-ignore lint/suspicious/noExplicitAny: accessing private gpuVideoModeData
+    const gpuData = (this.packedSplats as any).gpuVideoModeData;
+    if (gpuData?.material?.uniforms?.staticVizMode) {
+      gpuData.material.uniforms.staticVizMode.value = this.staticVizMode;
+    }
+  }
+
+  /**
+   * Get whether static visualization mode is enabled.
+   */
+  getStaticVizMode(): boolean {
+    return this.staticVizMode === 1;
+  }
+
+  /**
+   * Set the t_scale threshold for static/dynamic classification.
+   * Gaussians with t_scale >= threshold are considered static.
+   */
+  setStaticThreshold(threshold: number): void {
+    this.staticThreshold = threshold;
+    // biome-ignore lint/suspicious/noExplicitAny: accessing private gpuVideoModeData
+    const gpuData = (this.packedSplats as any).gpuVideoModeData;
+    if (gpuData?.material?.uniforms?.staticThreshold) {
+      gpuData.material.uniforms.staticThreshold.value = threshold;
+    }
+  }
+
+  /**
+   * Get the current static threshold value.
+   */
+  getStaticThreshold(): number {
+    return this.staticThreshold;
+  }
+
+  /**
+   * Get the t_scale range from metadata (for UI slider bounds).
+   * Returns [min, max] t_scale values.
+   */
+  getTScaleRange(): [number, number] {
+    return this.tScaleRange;
+  }
+
+  /**
    * Check if ImageDecoder API is available
    */
   static isSupported(): boolean {
@@ -291,6 +350,13 @@ export class VideoSplatMesh extends SplatMesh {
       this.frameGaussianCounts = metadata["4dgs"].frame_gaussian_counts;
     }
 
+    // Store t_scale range for static visualization UI
+    if (metadata["4dgs"]?.t_scale_range) {
+      this.tScaleRange = metadata["4dgs"].t_scale_range;
+      // Set initial threshold to middle of range
+      this.staticThreshold = (this.tScaleRange[0] + this.tScaleRange[1]) / 2;
+    }
+
     // Extract position bounds from SOG means metadata
     const positionMins = metadata.sog.means?.mins ?? [0, 0, 0];
     const positionMaxs = metadata.sog.means?.maxs ?? [1, 1, 1];
@@ -302,6 +368,7 @@ export class VideoSplatMesh extends SplatMesh {
       maxs: positionMaxs,
       scaleCodebook: metadata.sog.scales.codebook,
       sh0Codebook: metadata.sog.sh0.codebook,
+      tScaleCodebook: metadata.sog.t_scale?.codebook,
     };
 
     this.packedSplats.initVideoModeGPU(sparkMetadata, metadata.tile_size);
@@ -372,13 +439,20 @@ export class VideoSplatMesh extends SplatMesh {
       };
     };
 
-    return {
+    const result: GPUVideoTileUVs = {
       means_l: getTileUV("means_l"),
       means_u: getTileUV("means_u"),
       quats: getTileUV("quats"),
       scales: getTileUV("scales"),
       sh0: getTileUV("sh0"),
     };
+
+    // t_scale is optional - may not be present in older videos
+    if (layout.t_scale) {
+      result.t_scale = getTileUV("t_scale");
+    }
+
+    return result;
   }
 
   // WebGL texture handle for raw uploads (bypasses THREE.js color management)
