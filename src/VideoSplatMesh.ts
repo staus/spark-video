@@ -494,6 +494,8 @@ export class VideoSplatMesh extends SplatMesh {
 
   // WebGL texture handle for raw uploads (bypasses THREE.js color management)
   private glTexture: WebGLTexture | null = null;
+  // WebGL texture handle for static frame (static/dynamic split mode)
+  private staticGlTexture: WebGLTexture | null = null;
 
   /**
    * Upload frame to GPU using raw WebGL, bypassing THREE.js color management.
@@ -564,23 +566,32 @@ export class VideoSplatMesh extends SplatMesh {
     const bitmap = this.frameData[this.staticFrameIndex];
     if (!bitmap) return;
 
-    // Create static frame texture
+    // Create THREE.Texture container
     this.staticFrameTexture = new THREE.Texture();
     this.staticFrameTexture.minFilter = THREE.NearestFilter;
     this.staticFrameTexture.magFilter = THREE.NearestFilter;
     this.staticFrameTexture.generateMipmaps = false;
-    this.staticFrameTexture.colorSpace = THREE.LinearSRGBColorSpace;
+    this.staticFrameTexture.colorSpace = THREE.NoColorSpace;
 
-    // Create WebGL texture manually
-    const glTexture = gl.createTexture();
-    if (!glTexture) return;
+    // Create raw WebGL texture (same as dynamic texture setup)
+    this.staticGlTexture = gl.createTexture();
+    if (!this.staticGlTexture) return;
 
-    // biome-ignore lint/suspicious/noExplicitAny: accessing THREE.js internal properties
-    const texProps = renderer.properties.get(this.staticFrameTexture) as any;
-    texProps.__webglTexture = glTexture;
+    gl.bindTexture(gl.TEXTURE_2D, this.staticGlTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    // Inject our WebGL texture into THREE.js texture properties
+    const texProps = renderer.properties.get(this.staticFrameTexture) as {
+      __webglTexture: WebGLTexture | null;
+      __webglInit: boolean;
+    };
+    texProps.__webglTexture = this.staticGlTexture;
     texProps.__webglInit = true;
 
-    gl.bindTexture(gl.TEXTURE_2D, glTexture);
+    // Upload with explicit raw settings - no color conversion
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);

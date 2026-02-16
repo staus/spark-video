@@ -143,6 +143,7 @@ export declare class VideoSplatMesh extends SplatMesh {
     }>;
     private calculateTileUVs;
     private glTexture;
+    private staticGlTexture;
     /**
      * Upload frame to GPU using raw WebGL, bypassing THREE.js color management.
      * Guarantees no color space conversion, no alpha premultiplication.

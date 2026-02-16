@@ -12432,6 +12432,7 @@ const _VideoSplatMesh = class _VideoSplatMesh extends SplatMesh {
     this.staticFrameTexture = null;
     this.staticGaussianCount = 0;
     this.glTexture = null;
+    this.staticGlTexture = null;
     this.lastLoggedFrame = -1;
     this.frameDecodeCount = 0;
   }
@@ -12725,13 +12726,17 @@ const _VideoSplatMesh = class _VideoSplatMesh extends SplatMesh {
     this.staticFrameTexture.minFilter = THREE.NearestFilter;
     this.staticFrameTexture.magFilter = THREE.NearestFilter;
     this.staticFrameTexture.generateMipmaps = false;
-    this.staticFrameTexture.colorSpace = THREE.LinearSRGBColorSpace;
-    const glTexture = gl.createTexture();
-    if (!glTexture) return;
+    this.staticFrameTexture.colorSpace = THREE.NoColorSpace;
+    this.staticGlTexture = gl.createTexture();
+    if (!this.staticGlTexture) return;
+    gl.bindTexture(gl.TEXTURE_2D, this.staticGlTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     const texProps = renderer.properties.get(this.staticFrameTexture);
-    texProps.__webglTexture = glTexture;
+    texProps.__webglTexture = this.staticGlTexture;
     texProps.__webglInit = true;
-    gl.bindTexture(gl.TEXTURE_2D, glTexture);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
