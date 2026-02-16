@@ -131,6 +131,15 @@ export declare class PackedSplats {
      */
     updateVideoSplatCount(count: number): void;
     /**
+     * Set up static frame for static/dynamic compositing
+     * Call this once after loading to set the static frame texture
+     */
+    setStaticFrame(staticTexture: THREE.Texture, staticGaussianCount: number): void;
+    /**
+     * Disable static frame compositing
+     */
+    clearStaticFrame(): void;
+    /**
      * Dispose GPU video mode resources
      */
     disposeVideoModeGPU(): void;

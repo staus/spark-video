@@ -29,6 +29,9 @@ export interface Video4DGSMetadata {
     "4dgs"?: {
         frame_gaussian_counts?: number[];
         t_scale_range?: [number, number];
+        static_threshold?: number;
+        static_frame_index?: number;
+        dynamic_frame_start?: number;
     };
 }
 /**
@@ -72,6 +75,11 @@ export declare class VideoSplatMesh extends SplatMesh {
     private staticVizMode;
     private staticThreshold;
     private tScaleRange;
+    private hasStaticDynamicSplit;
+    private staticFrameIndex;
+    private dynamicFrameStart;
+    private staticFrameTexture;
+    private staticGaussianCount;
     static readonly QUAT_TRANSFORM_NAMES: string[];
     constructor(options?: SplatMeshOptions);
     /**
@@ -143,6 +151,10 @@ export declare class VideoSplatMesh extends SplatMesh {
     private lastLoggedFrame;
     private frameDecodeCount;
     /**
+     * Upload static frame to a separate texture (called once during first decode)
+     */
+    private uploadStaticFrameTexture;
+    /**
      * Decode a frame to GPU. Single path for all frame updates.
      */
     private decodeFrame;
@@ -153,6 +165,7 @@ export declare class VideoSplatMesh extends SplatMesh {
     tick(renderer: THREE.WebGLRenderer, now?: number): boolean;
     /**
      * Decode first frame without starting playback.
+     * For static/dynamic split, decodes the first dynamic frame (which composites with static).
      */
     decodeFirstFrame(renderer: THREE.WebGLRenderer): void;
     play(): void;

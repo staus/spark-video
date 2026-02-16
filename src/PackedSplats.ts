@@ -1039,6 +1039,10 @@ export class PackedSplats {
         maxScaleFilter: { value: 0.0 }, // 0 = disabled, >0 = max scale in world units
         staticVizMode: { value: 0 }, // 0 = off, 1 = show static gaussians in green
         staticThreshold: { value: 0.5 }, // t_scale threshold for static classification
+        // Static/dynamic frame compositing
+        staticVideoTexture: { value: null }, // Texture containing static frame (frame 0)
+        staticGaussianCount: { value: 0 }, // Number of gaussians in static frame
+        hasStaticFrame: { value: 0 }, // 0 = disabled, 1 = composite static + dynamic
       },
     });
 
@@ -1164,6 +1168,33 @@ export class PackedSplats {
     this.gpuVideoModeData.count = count;
     this.gpuVideoModeData.material.uniforms.splatCount.value = count;
     this.numSplats = count;
+  }
+
+  /**
+   * Set up static frame for static/dynamic compositing
+   * Call this once after loading to set the static frame texture
+   */
+  setStaticFrame(staticTexture: THREE.Texture, staticGaussianCount: number) {
+    if (!this.gpuVideoModeData) {
+      return;
+    }
+    const { material } = this.gpuVideoModeData;
+    material.uniforms.staticVideoTexture.value = staticTexture;
+    material.uniforms.staticGaussianCount.value = staticGaussianCount;
+    material.uniforms.hasStaticFrame.value = 1;
+  }
+
+  /**
+   * Disable static frame compositing
+   */
+  clearStaticFrame() {
+    if (!this.gpuVideoModeData) {
+      return;
+    }
+    const { material } = this.gpuVideoModeData;
+    material.uniforms.staticVideoTexture.value = null;
+    material.uniforms.staticGaussianCount.value = 0;
+    material.uniforms.hasStaticFrame.value = 0;
   }
 
   /**

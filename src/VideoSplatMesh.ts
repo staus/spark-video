@@ -60,6 +60,9 @@ export interface Video4DGSMetadata {
   "4dgs"?: {
     frame_gaussian_counts?: number[];
     t_scale_range?: [number, number]; // [min, max] t_scale values for threshold UI
+    static_threshold?: number; // t_scale threshold used for static/dynamic split
+    static_frame_index?: number; // Frame index containing static gaussians (usually 0)
+    dynamic_frame_start?: number; // First frame index containing dynamic gaussians (usually 1)
   };
 }
 
@@ -133,6 +136,14 @@ export class VideoSplatMesh extends SplatMesh {
   private staticThreshold = 0.5;
   // t_scale range from metadata (for UI slider)
   private tScaleRange: [number, number] = [0, 1];
+
+  // Static/dynamic frame split mode
+  // When enabled, frame 0 contains static gaussians that are composited with all dynamic frames
+  private hasStaticDynamicSplit = false;
+  private staticFrameIndex = 0;
+  private dynamicFrameStart = 1;
+  private staticFrameTexture: THREE.Texture | null = null;
+  private staticGaussianCount = 0;
 
   // Quaternion transform names for debugging UI
   static readonly QUAT_TRANSFORM_NAMES = [
@@ -357,6 +368,22 @@ export class VideoSplatMesh extends SplatMesh {
       this.staticThreshold = (this.tScaleRange[0] + this.tScaleRange[1]) / 2;
     }
 
+    // Detect static/dynamic split mode
+    if (
+      metadata["4dgs"]?.static_frame_index !== undefined &&
+      metadata["4dgs"]?.dynamic_frame_start !== undefined
+    ) {
+      this.hasStaticDynamicSplit = true;
+      this.staticFrameIndex = metadata["4dgs"].static_frame_index;
+      this.dynamicFrameStart = metadata["4dgs"].dynamic_frame_start;
+      // Static frame gaussian count is frame 0's count
+      this.staticGaussianCount =
+        this.frameGaussianCounts?.[this.staticFrameIndex] ?? 0;
+      console.log(
+        `[VideoSplatMesh] Static/dynamic split: static=${this.staticGaussianCount} gaussians in frame ${this.staticFrameIndex}, dynamic starts at frame ${this.dynamicFrameStart}`,
+      );
+    }
+
     // Extract position bounds from SOG means metadata
     const positionMins = metadata.sog.means?.mins ?? [0, 0, 0];
     const positionMaxs = metadata.sog.means?.maxs ?? [1, 1, 1];
@@ -400,7 +427,17 @@ export class VideoSplatMesh extends SplatMesh {
     console.log(`  Texture: ${this.videoWidth}x${this.videoHeight}`);
     console.log(`  Tile size: ${metadata.tile_size}px`);
     console.log(`  Max splat capacity: ${this.staticCount.toLocaleString()}`);
-    if (this.frameGaussianCounts) {
+    if (this.hasStaticDynamicSplit) {
+      const dynamicCounts =
+        this.frameGaussianCounts?.slice(this.dynamicFrameStart) ?? [];
+      const minDynamic =
+        dynamicCounts.length > 0 ? Math.min(...dynamicCounts) : 0;
+      const maxDynamic =
+        dynamicCounts.length > 0 ? Math.max(...dynamicCounts) : 0;
+      console.log(
+        `  Static/Dynamic split: ${this.staticGaussianCount.toLocaleString()} static + ${minDynamic.toLocaleString()}-${maxDynamic.toLocaleString()} dynamic per frame`,
+      );
+    } else if (this.frameGaussianCounts) {
       const minCount = Math.min(...this.frameGaussianCounts);
       const maxCount = Math.max(...this.frameGaussianCounts);
       console.log(
@@ -518,10 +555,66 @@ export class VideoSplatMesh extends SplatMesh {
   private frameDecodeCount = 0;
 
   /**
+   * Upload static frame to a separate texture (called once during first decode)
+   */
+  private uploadStaticFrameTexture(renderer: THREE.WebGLRenderer) {
+    if (this.staticFrameTexture || !this.hasStaticDynamicSplit) return;
+
+    const gl = renderer.getContext() as WebGL2RenderingContext;
+    const bitmap = this.frameData[this.staticFrameIndex];
+    if (!bitmap) return;
+
+    // Create static frame texture
+    this.staticFrameTexture = new THREE.Texture();
+    this.staticFrameTexture.minFilter = THREE.NearestFilter;
+    this.staticFrameTexture.magFilter = THREE.NearestFilter;
+    this.staticFrameTexture.generateMipmaps = false;
+    this.staticFrameTexture.colorSpace = THREE.LinearSRGBColorSpace;
+
+    // Create WebGL texture manually
+    const glTexture = gl.createTexture();
+    if (!glTexture) return;
+
+    // biome-ignore lint/suspicious/noExplicitAny: accessing THREE.js internal properties
+    const texProps = renderer.properties.get(this.staticFrameTexture) as any;
+    texProps.__webglTexture = glTexture;
+    texProps.__webglInit = true;
+
+    gl.bindTexture(gl.TEXTURE_2D, glTexture);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+
+    gl.texImage2D(
+      gl.TEXTURE_2D,
+      0,
+      gl.RGBA8,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      bitmap,
+    );
+
+    // Set up static frame in PackedSplats
+    this.packedSplats.setStaticFrame(
+      this.staticFrameTexture,
+      this.staticGaussianCount,
+    );
+
+    console.log(
+      `[VideoSplatMesh] Static frame uploaded: ${this.staticGaussianCount.toLocaleString()} gaussians`,
+    );
+  }
+
+  /**
    * Decode a frame to GPU. Single path for all frame updates.
    */
   private decodeFrame(renderer: THREE.WebGLRenderer, frameIndex: number) {
     if (!this.tileUVs) return;
+
+    // For static/dynamic split, upload static frame texture once
+    if (this.hasStaticDynamicSplit) {
+      this.uploadStaticFrameTexture(renderer);
+    }
 
     // Upload frame using raw WebGL (bypasses THREE.js color management)
     this.uploadFrameRawWebGL(renderer, frameIndex);
@@ -529,8 +622,16 @@ export class VideoSplatMesh extends SplatMesh {
     // frameTexture is guaranteed to exist after uploadFrameRawWebGL
     if (!this.frameTexture) return;
 
-    const expectedCount =
-      this.frameGaussianCounts?.[frameIndex] ?? this.staticCount;
+    // Calculate total count: static + dynamic (or just frame count if no split)
+    let expectedCount: number;
+    if (this.hasStaticDynamicSplit) {
+      const dynamicCount = this.frameGaussianCounts?.[frameIndex] ?? 0;
+      expectedCount = this.staticGaussianCount + dynamicCount;
+    } else {
+      expectedCount =
+        this.frameGaussianCounts?.[frameIndex] ?? this.staticCount;
+    }
+
     this.packedSplats.updateVideoSplatCount(expectedCount);
     this.numSplats = expectedCount;
 
@@ -587,7 +688,18 @@ export class VideoSplatMesh extends SplatMesh {
     }
 
     this.accumulatedTime -= this.frameInterval;
-    this.currentFrameIndex = (this.currentFrameIndex + 1) % this.totalFrames;
+
+    // For static/dynamic split, only loop through dynamic frames (skip frame 0)
+    if (this.hasStaticDynamicSplit) {
+      const dynamicFrameCount = this.totalFrames - this.dynamicFrameStart;
+      const dynamicIndex =
+        ((this.currentFrameIndex - this.dynamicFrameStart + 1) %
+          dynamicFrameCount) +
+        this.dynamicFrameStart;
+      this.currentFrameIndex = dynamicIndex;
+    } else {
+      this.currentFrameIndex = (this.currentFrameIndex + 1) % this.totalFrames;
+    }
     this.decodeFrame(renderer, this.currentFrameIndex);
 
     return true;
@@ -595,15 +707,25 @@ export class VideoSplatMesh extends SplatMesh {
 
   /**
    * Decode first frame without starting playback.
+   * For static/dynamic split, decodes the first dynamic frame (which composites with static).
    */
   decodeFirstFrame(renderer: THREE.WebGLRenderer) {
-    this.decodeFrame(renderer, 0);
+    const startFrame = this.hasStaticDynamicSplit ? this.dynamicFrameStart : 0;
+    this.currentFrameIndex = startFrame;
+    this.decodeFrame(renderer, startFrame);
   }
 
   play() {
     this.isPlaying = true;
     this.lastFrameTime = 0;
     this.accumulatedTime = 0;
+    // For static/dynamic split, ensure we start from first dynamic frame
+    if (
+      this.hasStaticDynamicSplit &&
+      this.currentFrameIndex < this.dynamicFrameStart
+    ) {
+      this.currentFrameIndex = this.dynamicFrameStart;
+    }
   }
 
   pause() {

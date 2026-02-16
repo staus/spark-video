@@ -56,6 +56,13 @@ uniform int staticVizMode;
 // Gaussians with t_scale >= threshold are considered static
 uniform float staticThreshold;
 
+// Static/dynamic frame compositing
+// When hasStaticFrame=1, first staticGaussianCount splats come from staticVideoTexture
+// Remaining splats come from videoTexture with index offset
+uniform sampler2D staticVideoTexture;
+uniform int staticGaussianCount;
+uniform int hasStaticFrame;
+
 out uvec4 target;
 
 // Constants for quaternion decoding
@@ -199,8 +206,8 @@ vec4 applyQuatTransform(vec4 q) {
     return normalize(result);
 }
 
-// Sample a tile at the given splat index
-vec4 sampleTile(vec4 tileUV, int splatIndex) {
+// Sample a tile at the given splat index from the specified texture
+vec4 sampleTileFromTexture(vec4 tileUV, int splatIndex, sampler2D tex) {
     // Calculate which pixel in the tile this splat maps to
     int tileSizeInt = int(tileSize);
     int tileX = splatIndex % tileSizeInt;
@@ -216,7 +223,17 @@ vec4 sampleTile(vec4 tileUV, int splatIndex) {
     // Tile UVs are calculated in top-left origin, which matches directly
     // No V-flip needed
 
-    return texture(videoTexture, vec2(u, v));
+    return texture(tex, vec2(u, v));
+}
+
+// Sample a tile at the given splat index (from dynamic videoTexture)
+vec4 sampleTile(vec4 tileUV, int splatIndex) {
+    return sampleTileFromTexture(tileUV, splatIndex, videoTexture);
+}
+
+// Sample a tile from the static frame texture
+vec4 sampleTileStatic(vec4 tileUV, int splatIndex) {
+    return sampleTileFromTexture(tileUV, splatIndex, staticVideoTexture);
 }
 
 // Decode position from means_l and means_u tiles
@@ -344,6 +361,69 @@ float decodeTScale(int splatIndex) {
     return texture(tScaleCodebook, vec2((idx + 0.5) / 256.0, 0.5)).r;
 }
 
+// Decode functions that use the appropriate texture (static or dynamic)
+vec3 decodePositionFrom(int idx, bool useStatic) {
+    vec4 meansL = useStatic ? sampleTileStatic(tileUV_means_l, idx) : sampleTile(tileUV_means_l, idx);
+    vec4 meansU = useStatic ? sampleTileStatic(tileUV_means_u, idx) : sampleTile(tileUV_means_u, idx);
+    vec3 posU16 = vec3(
+        floor(meansL.r * 255.0 + 0.5) + floor(meansU.r * 255.0 + 0.5) * 256.0,
+        floor(meansL.g * 255.0 + 0.5) + floor(meansU.g * 255.0 + 0.5) * 256.0,
+        floor(meansL.b * 255.0 + 0.5) + floor(meansU.b * 255.0 + 0.5) * 256.0
+    );
+    vec3 posNorm = posU16 / 65535.0;
+    vec3 posLog = positionMins + (positionMaxs - positionMins) * posNorm;
+    vec3 pos;
+    pos.x = sign(posLog.x) * (exp(abs(posLog.x)) - 1.0);
+    pos.y = sign(posLog.y) * (exp(abs(posLog.y)) - 1.0);
+    pos.z = sign(posLog.z) * (exp(abs(posLog.z)) - 1.0);
+    return pos;
+}
+
+vec4 decodeQuaternionFrom(int idx, bool useStatic) {
+    vec4 quatsRaw = useStatic ? sampleTileStatic(tileUV_quats, idx) : sampleTile(tileUV_quats, idx);
+    float qr = floor(quatsRaw.r * 255.0 + 0.5);
+    float qg = floor(quatsRaw.g * 255.0 + 0.5);
+    float qb = floor(quatsRaw.b * 255.0 + 0.5);
+    float qa = floor(quatsRaw.a * 255.0 + 0.5);
+    float r0 = (qr / 255.0 - 0.5) * SQRT2;
+    float r1 = (qg / 255.0 - 0.5) * SQRT2;
+    float r2 = (qb / 255.0 - 0.5) * SQRT2;
+    float rr = sqrt(max(0.0, 1.0 - r0*r0 - r1*r1 - r2*r2));
+    int rOrder = int(qa) - 252;
+    vec4 quat;
+    if (rOrder == 0) { quat = vec4(r0, r1, r2, rr); }
+    else if (rOrder == 1) { quat = vec4(rr, r1, r2, r0); }
+    else if (rOrder == 2) { quat = vec4(r1, rr, r2, r0); }
+    else { quat = vec4(r1, r2, rr, r0); }
+    return normalize(quat);
+}
+
+vec3 decodeScalesFrom(int idx, bool useStatic) {
+    vec4 scalesRaw = useStatic ? sampleTileStatic(tileUV_scales, idx) : sampleTile(tileUV_scales, idx);
+    float idxX = floor(scalesRaw.r * 255.0 + 0.5);
+    float idxY = floor(scalesRaw.g * 255.0 + 0.5);
+    float idxZ = floor(scalesRaw.b * 255.0 + 0.5);
+    float logScaleX = texture(scaleCodebook, vec2((idxX + 0.5) / 256.0, 0.5)).r;
+    float logScaleY = texture(scaleCodebook, vec2((idxY + 0.5) / 256.0, 0.5)).r;
+    float logScaleZ = texture(scaleCodebook, vec2((idxZ + 0.5) / 256.0, 0.5)).r;
+    return vec3(exp(logScaleX), exp(logScaleY), exp(logScaleZ));
+}
+
+vec4 decodeRGBAFrom(int idx, bool useStatic) {
+    vec4 sh0Raw = useStatic ? sampleTileStatic(tileUV_sh0, idx) : sampleTile(tileUV_sh0, idx);
+    float idxR = floor(sh0Raw.r * 255.0 + 0.5);
+    float idxG = floor(sh0Raw.g * 255.0 + 0.5);
+    float idxB = floor(sh0Raw.b * 255.0 + 0.5);
+    float sh0R = texture(sh0Codebook, vec2((idxR + 0.5) / 256.0, 0.5)).r;
+    float sh0G = texture(sh0Codebook, vec2((idxG + 0.5) / 256.0, 0.5)).r;
+    float sh0B = texture(sh0Codebook, vec2((idxB + 0.5) / 256.0, 0.5)).r;
+    float colorR = SH_C0 * sh0R + 0.5;
+    float colorG = SH_C0 * sh0G + 0.5;
+    float colorB = SH_C0 * sh0B + 0.5;
+    float opacity = sh0Raw.a;
+    return vec4(clamp(colorR, 0.0, 1.0), clamp(colorG, 0.0, 1.0), clamp(colorB, 0.0, 1.0), opacity);
+}
+
 void main() {
     // Calculate which splat this fragment corresponds to
     int targetIndex = int(targetLayer << SPLAT_TEX_LAYER_BITS) +
@@ -352,11 +432,16 @@ void main() {
     int splatIndex = targetIndex - targetBase;
 
     if (splatIndex >= 0 && splatIndex < targetCount && splatIndex < splatCount) {
-        // Decode all splat attributes from video tiles
-        vec3 center = decodePosition(splatIndex);
-        vec4 quaternion = decodeQuaternion(splatIndex);
-        vec3 scales = decodeScales(splatIndex);
-        vec4 rgba = decodeRGBA(splatIndex);
+        // Determine if this is a static or dynamic splat
+        bool isStaticSplat = hasStaticFrame == 1 && splatIndex < staticGaussianCount;
+        // For dynamic splats, adjust index to account for static offset
+        int textureSplatIndex = isStaticSplat ? splatIndex : (splatIndex - staticGaussianCount);
+
+        // Decode all splat attributes from appropriate texture
+        vec3 center = decodePositionFrom(textureSplatIndex, isStaticSplat);
+        vec4 quaternion = decodeQuaternionFrom(textureSplatIndex, isStaticSplat);
+        vec3 scales = decodeScalesFrom(textureSplatIndex, isStaticSplat);
+        vec4 rgba = decodeRGBAFrom(textureSplatIndex, isStaticSplat);
 
         // Apply quaternion transformation (for coordinate system debugging)
         quaternion = applyQuatTransform(quaternion);
