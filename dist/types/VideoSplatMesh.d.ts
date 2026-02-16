@@ -22,9 +22,13 @@ export interface Video4DGSMetadata {
         sh0: {
             codebook: number[];
         };
+        t_scale?: {
+            codebook: number[];
+        };
     };
     "4dgs"?: {
         frame_gaussian_counts?: number[];
+        t_scale_range?: [number, number];
     };
 }
 /**
@@ -65,6 +69,9 @@ export declare class VideoSplatMesh extends SplatMesh {
     onFrameChange: ((frameIndex: number, totalFrames: number) => void) | null;
     private quatTransformMode;
     private maxScaleFilter;
+    private staticVizMode;
+    private staticThreshold;
+    private tScaleRange;
     static readonly QUAT_TRANSFORM_NAMES: string[];
     constructor(options?: SplatMeshOptions);
     /**
@@ -93,6 +100,29 @@ export declare class VideoSplatMesh extends SplatMesh {
      * Get the current max scale filter value.
      */
     getMaxScaleFilter(): number;
+    /**
+     * Enable/disable static visualization mode.
+     * When enabled, static gaussians (t_scale >= threshold) are rendered in green.
+     */
+    setStaticVizMode(enabled: boolean): void;
+    /**
+     * Get whether static visualization mode is enabled.
+     */
+    getStaticVizMode(): boolean;
+    /**
+     * Set the t_scale threshold for static/dynamic classification.
+     * Gaussians with t_scale >= threshold are considered static.
+     */
+    setStaticThreshold(threshold: number): void;
+    /**
+     * Get the current static threshold value.
+     */
+    getStaticThreshold(): number;
+    /**
+     * Get the t_scale range from metadata (for UI slider bounds).
+     * Returns [min, max] t_scale values.
+     */
+    getTScaleRange(): [number, number];
     /**
      * Check if ImageDecoder API is available
      */

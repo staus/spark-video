@@ -144,6 +144,7 @@ export type SOGVideoMetadata = {
     maxs: [number, number, number];
     scaleCodebook: number[];
     sh0Codebook: number[];
+    tScaleCodebook?: number[];
 };
 /**
  * SOG video tile data from a single frame
@@ -173,6 +174,7 @@ export type GPUVideoTileUVs = {
     quats: GPUVideoTileUV;
     scales: GPUVideoTileUV;
     sh0: GPUVideoTileUV;
+    t_scale?: GPUVideoTileUV;
 };
 export declare const dynoPackedSplats: (packedSplats?: PackedSplats) => DynoPackedSplats;
 export declare class DynoPackedSplats extends DynoUniform<typeof TPackedSplats, "packedSplats", {
