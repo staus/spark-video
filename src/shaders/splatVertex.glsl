@@ -35,6 +35,7 @@ uniform float focalAdjustment;
 
 uniform usampler2DArray packedSplats;
 uniform vec4 rgbMinMaxLnScaleMinMax;
+uniform int quatTransformMode;
 
 #ifdef USE_LOGDEPTHBUF
     bool isPerspectiveMatrix( mat4 m ) {
@@ -73,6 +74,9 @@ void main() {
     vec3 center, scales;
     vec4 quaternion, rgba;
     unpackSplatEncoding(packed, center, scales, quaternion, rgba, rgbMinMaxLnScaleMinMax);
+
+    // Apply quaternion transform (for coordinate system debugging)
+    quaternion = applyQuatTransform(quaternion, quatTransformMode);
 
     if (rgba.a < minAlpha) {
         return;

@@ -64,8 +64,7 @@ export declare class DeltaSplatMesh extends SplatMesh {
     private quatTransformMode;
     /**
      * Set quaternion transform mode for debugging orientation issues.
-     * Even though delta encoding applies Y180 at encode time, we may need
-     * additional transforms to match the coordinate system.
+     * The transform is applied in the render shader for instant updates.
      */
     setQuatTransformMode(mode: number): void;
     getQuatTransformMode(): number;

@@ -260,6 +260,9 @@ export declare class SparkRenderer extends THREE.Mesh {
         rgbMinMaxLnScaleMinMax: {
             value: THREE.Vector4;
         };
+        quatTransformMode: {
+            value: number;
+        };
         time: {
             value: number;
         };

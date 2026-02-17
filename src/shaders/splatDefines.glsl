@@ -199,3 +199,57 @@ ivec3 splatTexCoord(int index) {
     uint z = uint(index) >> SPLAT_TEX_LAYER_BITS;
     return ivec3(x, y, z);
 }
+
+// Apply quaternion transformation based on mode (for coordinate system debugging)
+vec4 applyQuatTransform(vec4 q, int mode) {
+    if (mode == 0) return q; // identity - early exit for common case
+
+    // Pre-computed rotation quaternions
+    float s45 = 0.70710678118; // sin(45°) = cos(45°) = sqrt(2)/2
+
+    vec4 rotX90 = vec4(s45, 0.0, 0.0, s45);
+    vec4 rotX180 = vec4(1.0, 0.0, 0.0, 0.0);
+    vec4 rotX270 = vec4(s45, 0.0, 0.0, -s45);
+    vec4 rotY90 = vec4(0.0, s45, 0.0, s45);
+    vec4 rotY180 = vec4(0.0, 1.0, 0.0, 0.0);
+    vec4 rotY270 = vec4(0.0, s45, 0.0, -s45);
+    vec4 rotZ90 = vec4(0.0, 0.0, s45, s45);
+    vec4 rotZ180 = vec4(0.0, 0.0, 1.0, 0.0);
+    vec4 rotZ270 = vec4(0.0, 0.0, s45, -s45);
+
+    vec4 result = q;
+
+    if (mode == 1) { result = quatQuat(rotX90, q); }
+    else if (mode == 2) { result = quatQuat(rotX270, q); }
+    else if (mode == 3) { result = quatQuat(rotX180, q); }
+    else if (mode == 4) { result = quatQuat(rotY90, q); }
+    else if (mode == 5) { result = quatQuat(rotY270, q); }
+    else if (mode == 6) { result = quatQuat(rotY180, q); }
+    else if (mode == 7) { result = quatQuat(rotZ90, q); }
+    else if (mode == 8) { result = quatQuat(rotZ270, q); }
+    else if (mode == 9) { result = quatQuat(rotZ180, q); }
+    else if (mode == 10) { result = vec4(q.y, q.x, q.z, q.w); } // Swap XY
+    else if (mode == 11) { result = vec4(q.z, q.y, q.x, q.w); } // Swap XZ
+    else if (mode == 12) { result = vec4(q.x, q.z, q.y, q.w); } // Swap YZ
+    else if (mode == 13) { result = vec4(-q.x, q.y, q.z, q.w); } // Negate X
+    else if (mode == 14) { result = vec4(q.x, -q.y, q.z, q.w); } // Negate Y
+    else if (mode == 15) { result = vec4(q.x, q.y, -q.z, q.w); } // Negate Z
+    else if (mode == 16) { result = vec4(q.x, q.y, q.z, -q.w); } // Negate W
+    else if (mode == 17) { result = vec4(-q.x, -q.y, q.z, q.w); } // Negate XY
+    else if (mode == 18) { result = vec4(-q.x, q.y, -q.z, q.w); } // Negate XZ
+    else if (mode == 19) { result = vec4(q.x, -q.y, -q.z, q.w); } // Negate YZ
+    else if (mode == 20) { result = quatQuat(rotX90, q); result = vec4(result.x, result.z, result.y, result.w); }
+    else if (mode == 21) { result = quatQuat(rotX270, q); result = vec4(result.x, result.z, result.y, result.w); }
+    else if (mode == 22) { result = vec4(-q.x, -q.y, -q.z, q.w); } // Conjugate
+    else if (mode == 23) { result = vec4(q.x, q.z, -q.y, q.w); } // Blender Z-up to Y-up
+    else if (mode == 24) { result = vec4(q.x, -q.z, q.y, q.w); } // Blender Z-up variant 2
+    else if (mode == 25) { result = quatQuat(rotX90, q); result = vec4(result.x, result.y, -result.z, result.w); }
+    else if (mode == 26) { result = quatQuat(rotX270, q); result = vec4(result.x, result.y, -result.z, result.w); }
+    else if (mode == 27) { result = quatQuat(rotX90, q); result = vec4(result.x, -result.y, result.z, result.w); }
+    else if (mode == 28) { result = quatQuat(rotX270, q); result = vec4(result.x, -result.y, result.z, result.w); }
+    else if (mode == 29) { result = vec4(q.w, q.x, q.y, q.z); } // WXYZ to XYZW
+    else if (mode == 30) { result = vec4(q.y, q.z, q.w, q.x); } // XYZW to WXYZ
+    else if (mode == 31) { result = vec4(q.z, q.w, q.x, q.y); } // YZWX
+
+    return normalize(result);
+}

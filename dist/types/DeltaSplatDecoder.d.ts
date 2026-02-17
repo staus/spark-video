@@ -51,6 +51,7 @@ export declare class DeltaSplatDecoder {
     private motionRange;
     private maxActive;
     private activeGaussians;
+    private activeIndices;
     private freeSlots;
     private activeCount;
     currentFrameIndex: number;

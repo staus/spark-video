@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { type Delta4DGSMetadata, DeltaSplatDecoder } from "./DeltaSplatDecoder";
 import type { GPUVideoTileUVs, SOGVideoMetadata } from "./PackedSplats";
+import { SparkRenderer } from "./SparkRenderer";
 import { SplatMesh, type SplatMeshOptions } from "./SplatMesh";
 
 /**
@@ -296,16 +297,26 @@ export class DeltaSplatMesh extends SplatMesh {
 
   /**
    * Set quaternion transform mode for debugging orientation issues.
-   * Even though delta encoding applies Y180 at encode time, we may need
-   * additional transforms to match the coordinate system.
+   * The transform is applied in the render shader for instant updates.
    */
   setQuatTransformMode(mode: number): void {
     this.quatTransformMode = mode;
-    // Update the uniform in the GPU video mode material
-    // biome-ignore lint/suspicious/noExplicitAny: accessing private gpuVideoModeData
-    const gpuData = (this.packedSplats as any).gpuVideoModeData;
-    if (gpuData?.material?.uniforms?.quatTransformMode) {
-      gpuData.material.uniforms.quatTransformMode.value = mode;
+
+    // Find the SparkRenderer in the scene and update its uniform
+    let scene: THREE.Object3D | null = this.parent;
+    while (scene && !(scene instanceof THREE.Scene)) {
+      scene = scene.parent;
+    }
+    if (scene) {
+      scene.traverse((obj) => {
+        if (obj instanceof SparkRenderer) {
+          // biome-ignore lint/suspicious/noExplicitAny: accessing uniforms
+          const uniforms = (obj as any).uniforms;
+          if (uniforms?.quatTransformMode) {
+            uniforms.quatTransformMode.value = mode;
+          }
+        }
+      });
     }
   }
 

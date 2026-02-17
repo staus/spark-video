@@ -962,34 +962,6 @@ export function epsilonSign(value: number, epsilon = 0.001): number {
   return Math.sign(value);
 }
 
-// Encode a THREE.Quaternion into a 24-bit integer, converting the xyz coordinates
-// to signed 8-bit integers (w can be derived from xyz), and flipping the sign
-// of the quaternion if necessary to make this possible (q == -q for quaternions).
-export function encodeQuatXyz888(q: THREE.Quaternion): number {
-  const negQuat = q.w < 0.0;
-  const iQuatX = floatToSint8(negQuat ? -q.x : q.x);
-  const iQuatY = floatToSint8(negQuat ? -q.y : q.y);
-  const iQuatZ = floatToSint8(negQuat ? -q.z : q.z);
-  const uQuatX = iQuatX & 0xff;
-  const uQuatY = iQuatY & 0xff;
-  const uQuatZ = iQuatZ & 0xff;
-  return uQuatX | (uQuatY << 8) | (uQuatZ << 16);
-}
-
-// Decode a 24-bit integer of the quaternion's xyz coordinates into a THREE.Quaternion.
-export function decodeQuatXyz888(
-  encoded: number,
-  out: THREE.Quaternion,
-): THREE.Quaternion {
-  const iQuatX = (encoded << 24) >> 24;
-  const iQuatY = (encoded << 16) >> 24;
-  const iQuatZ = (encoded << 8) >> 24;
-  out.set(iQuatX / 127.0, iQuatY / 127.0, iQuatZ / 127.0, 0.0);
-  const dotSelf = out.x * out.x + out.y * out.y + out.z * out.z;
-  out.w = Math.sqrt(Math.max(0.0, 1.0 - dotSelf));
-  return out;
-}
-
 // Temporary storage used in `encodeQuatOCtXy88R8` and `decodeQuatOctXy88R8` to
 // avoid allocation new Quaternions and Vector3 instances.
 const tempNormalizedQuaternion = new THREE.Quaternion();
@@ -1080,88 +1052,6 @@ export function decodeQuatOctXy88R8(
   const w = Math.cos(halfTheta);
   // Reconstruct the quaternion from axis-angle: (axis * sin(θ/2), cos(θ/2))
   out.set(axis.x * s, axis.y * s, axis.z * s, w);
-  return out;
-}
-
-/**
- * Encodes a THREE.Quaternion into a 24‑bit unsigned integer
- * by converting it to Euler angles (roll, pitch, yaw).
- * The Euler angles are assumed to be in radians in the range [-π, π].
- * Each angle is normalized to [0,1] and quantized to 8 bits.
- * Bit layout (LSB→MSB):
- *   - Bits 0–7:   roll (quantized)
- *   - Bits 8–15:  pitch (quantized)
- *   - Bits 16–23: yaw (quantized)
- */
-export function encodeQuatEulerXyz888(q: THREE.Quaternion): number {
-  // Normalize quaternion to ensure a proper rotation.
-  const qNorm = q.clone().normalize();
-
-  // Tait–Bryan angles (roll, pitch, yaw)
-  const sinr_cosp = 2.0 * (qNorm.w * qNorm.x + qNorm.y * qNorm.z);
-  const cosr_cosp = 1.0 - 2.0 * (qNorm.x * qNorm.x + qNorm.y * qNorm.y);
-  const roll = Math.atan2(sinr_cosp, cosr_cosp);
-
-  const sinp = 2.0 * (qNorm.w * qNorm.y - qNorm.z * qNorm.x);
-  const pitch =
-    Math.abs(sinp) >= 1.0 ? Math.sign(sinp) * (Math.PI / 2) : Math.asin(sinp);
-
-  const siny_cosp = 2.0 * (qNorm.w * qNorm.z + qNorm.x * qNorm.y);
-  const cosy_cosp = 1.0 - 2.0 * (qNorm.y * qNorm.y + qNorm.z * qNorm.z);
-  const yaw = Math.atan2(siny_cosp, cosy_cosp);
-
-  // Map each angle from [-π, π] to [0, 1]
-  const normRoll = (roll + Math.PI) / (2 * Math.PI);
-  const normPitch = (pitch + Math.PI) / (2 * Math.PI);
-  const normYaw = (yaw + Math.PI) / (2 * Math.PI);
-
-  // Quantize to 8 bits (0 to 255)
-  const rollQ = Math.round(normRoll * 255);
-  const pitchQ = Math.round(normPitch * 255);
-  const yawQ = Math.round(normYaw * 255);
-
-  // Pack into a 24-bit unsigned integer:
-  //   Bits 0–7:   rollQ, Bits 8–15: pitchQ, Bits 16–23: yawQ.
-  return (yawQ << 16) | (pitchQ << 8) | rollQ;
-}
-
-/**
- * Decodes a 24‑bit unsigned integer into a THREE.Quaternion
- * by unpacking three 8‑bit values (roll, pitch, yaw) in the range [0,255]
- * and then converting them back to Euler angles in [-π, π] and to a quaternion.
- */
-export function decodeQuatEulerXyz888(
-  encoded: number,
-  out: THREE.Quaternion,
-): THREE.Quaternion {
-  // Unpack 8‑bit values.
-  const rollQ = encoded & 0xff;
-  const pitchQ = (encoded >>> 8) & 0xff;
-  const yawQ = (encoded >>> 16) & 0xff;
-
-  // Convert quantized values back to normalized [0,1] values.
-  const normRoll = rollQ / 255;
-  const normPitch = pitchQ / 255;
-  const normYaw = yawQ / 255;
-
-  // Map from [0,1] to [-π, π]
-  const roll = normRoll * (2 * Math.PI) - Math.PI;
-  const pitch = normPitch * (2 * Math.PI) - Math.PI;
-  const yaw = normYaw * (2 * Math.PI) - Math.PI;
-
-  // Convert Euler angles to quaternion (Tait–Bryan: roll, pitch, yaw).
-  const cr = Math.cos(roll * 0.5);
-  const sr = Math.sin(roll * 0.5);
-  const cp = Math.cos(pitch * 0.5);
-  const sp = Math.sin(pitch * 0.5);
-  const cy = Math.cos(yaw * 0.5);
-  const sy = Math.sin(yaw * 0.5);
-
-  out.w = cr * cp * cy + sr * sp * sy;
-  out.x = sr * cp * cy - cr * sp * sy;
-  out.y = cr * sp * cy + sr * cp * sy;
-  out.z = cr * cp * sy - sr * sp * cy;
-  out.normalize();
   return out;
 }
 

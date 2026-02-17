@@ -117,8 +117,6 @@ export declare function withinCoorientDist({ matrix1, matrix2, maxDistance, minC
     minCoorient?: number;
 }): boolean;
 export declare function epsilonSign(value: number, epsilon?: number): number;
-export declare function encodeQuatXyz888(q: THREE.Quaternion): number;
-export declare function decodeQuatXyz888(encoded: number, out: THREE.Quaternion): THREE.Quaternion;
 /**
  * Encodes a THREE.Quaternion into a 24‐bit integer.
  *
@@ -136,23 +134,6 @@ export declare function encodeQuatOctXy88R8(q: THREE.Quaternion): number;
  * Assumes the same bit layout as in encodeQuatOctXy88R8.
  */
 export declare function decodeQuatOctXy88R8(encoded: number, out: THREE.Quaternion): THREE.Quaternion;
-/**
- * Encodes a THREE.Quaternion into a 24‑bit unsigned integer
- * by converting it to Euler angles (roll, pitch, yaw).
- * The Euler angles are assumed to be in radians in the range [-π, π].
- * Each angle is normalized to [0,1] and quantized to 8 bits.
- * Bit layout (LSB→MSB):
- *   - Bits 0–7:   roll (quantized)
- *   - Bits 8–15:  pitch (quantized)
- *   - Bits 16–23: yaw (quantized)
- */
-export declare function encodeQuatEulerXyz888(q: THREE.Quaternion): number;
-/**
- * Decodes a 24‑bit unsigned integer into a THREE.Quaternion
- * by unpacking three 8‑bit values (roll, pitch, yaw) in the range [0,255]
- * and then converting them back to Euler angles in [-π, π] and to a quaternion.
- */
-export declare function decodeQuatEulerXyz888(encoded: number, out: THREE.Quaternion): THREE.Quaternion;
 export declare function encodeSh1Rgb(sh1Array: Uint32Array, index: number, sh1Rgb: Float32Array, encoding?: {
     sh1Min?: number;
     sh1Max?: number;

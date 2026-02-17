@@ -7,7 +7,7 @@
  * Uses canvas 2D with careful color space handling to read raw pixel data.
  */
 
-// WebCodecs ImageDecoder API types (not yet in lib.dom.d.ts)
+// WebCodecs API types (not yet complete in lib.dom.d.ts)
 interface ImageDecoderInit {
   data: ArrayBuffer | ArrayBufferView;
   type: string;
@@ -95,6 +95,7 @@ export class DeltaSplatDecoder {
 
   private maxActive: number;
   private activeGaussians: (ActiveGaussian | null)[];
+  private activeIndices: number[]; // Compact list of occupied slot indices
   private freeSlots: number[];
   private activeCount: number;
   currentFrameIndex: number;
@@ -137,6 +138,7 @@ export class DeltaSplatDecoder {
     const maxActive = metadata["4dgs"].max_active_gaussians;
     this.maxActive = maxActive;
     this.activeGaussians = new Array(maxActive).fill(null);
+    this.activeIndices = [];
     this.freeSlots = [];
     for (let i = maxActive - 1; i >= 0; i--) {
       this.freeSlots.push(i);
@@ -180,16 +182,6 @@ export class DeltaSplatDecoder {
       decoder.tracks.selectedTrack?.frameCount || this.metadata.video.frames;
     this.framePixelData = [];
 
-    // Create canvas for pixel extraction
-    const canvas = new OffscreenCanvas(this.frameWidth, this.frameHeight);
-    const ctx = canvas.getContext("2d", {
-      willReadFrequently: true,
-      colorSpace: "srgb",
-    });
-    if (!ctx) {
-      throw new Error("Failed to get 2D context");
-    }
-
     console.log(`Decoding ${frameCount} delta frames...`);
     console.log(`Frame dimensions: ${this.frameWidth}x${this.frameHeight}`);
 
@@ -197,34 +189,58 @@ export class DeltaSplatDecoder {
       const result = await decoder.decode({ frameIndex: i });
       const frame = result.image;
 
-      // Create ImageBitmap without color conversion
-      const bitmap = await createImageBitmap(frame, {
-        premultiplyAlpha: "none",
-        colorSpaceConversion: "none",
-      });
+      // Log format on first frame (before closing)
+      const format = frame.format ?? "unknown";
+      if (i === 0) {
+        console.log(`VideoFrame format: ${format}`);
+      }
 
-      // Draw to canvas and extract pixels
-      ctx.drawImage(bitmap, 0, 0);
-      const imageData = ctx.getImageData(
-        0,
-        0,
-        this.frameWidth,
-        this.frameHeight,
-        {
-          colorSpace: "srgb",
-        },
-      );
+      // Use copyTo() to get raw bytes directly from VideoFrame
+      // This bypasses ImageBitmap color space conversion
+      const byteLength = this.frameWidth * this.frameHeight * 4;
+      const buffer = new ArrayBuffer(byteLength);
 
-      this.framePixelData.push(imageData.data);
+      // copyTo gives us raw bytes in the frame's native format
+      await frame.copyTo(buffer);
 
-      bitmap.close();
       frame.close();
 
-      // Debug: log first frame's first few pixels
+      // Convert to Uint8ClampedArray and handle BGRA->RGBA if needed
+      const pixels = new Uint8ClampedArray(buffer);
+
+      // BGRA is common for browsers - swap R and B channels
+      if (format === "BGRA" || format === "BGRX") {
+        for (let j = 0; j < pixels.length; j += 4) {
+          const b = pixels[j];
+          pixels[j] = pixels[j + 2]; // R = B
+          pixels[j + 2] = b; // B = R
+        }
+      }
+
+      this.framePixelData.push(pixels);
+
+      // Debug: log first frame's pixels from different tiles
       if (i === 0) {
-        const d = imageData.data;
         console.log(
-          `Frame 0 first pixel: R=${d[0]} G=${d[1]} B=${d[2]} A=${d[3]}`,
+          `Frame 0 first pixel (means_l): R=${pixels[0]} G=${pixels[1]} B=${pixels[2]} A=${pixels[3]}`,
+        );
+        // Pixel from tile (2,0) = quats tile
+        const ts = this.tileSize;
+        const quatTileX = 2 * ts;
+        const quatIdx = quatTileX * 4;
+        console.log(
+          `Frame 0 quat tile first pixel: R=${pixels[quatIdx]} G=${pixels[quatIdx + 1]} B=${pixels[quatIdx + 2]} A=${pixels[quatIdx + 3]}`,
+        );
+        // Pixel from tile (0,1) = scales tile
+        const scaleTileY = ts;
+        const scaleIdx = scaleTileY * this.frameWidth * 4;
+        console.log(
+          `Frame 0 scale tile first pixel: R=${pixels[scaleIdx]} G=${pixels[scaleIdx + 1]} B=${pixels[scaleIdx + 2]} A=${pixels[scaleIdx + 3]}`,
+        );
+        // Pixel from tile (1,1) = sh0 tile
+        const sh0Idx = (scaleTileY * this.frameWidth + ts) * 4;
+        console.log(
+          `Frame 0 sh0 tile first pixel: R=${pixels[sh0Idx]} G=${pixels[sh0Idx + 1]} B=${pixels[sh0Idx + 2]} A=${pixels[sh0Idx + 3]}`,
         );
         console.log(
           `Birth count for frame 0: ${this.metadata["4dgs"].birth_counts[0]}`,
@@ -284,6 +300,7 @@ export class DeltaSplatDecoder {
 
   reset(): void {
     this.activeGaussians.fill(null);
+    this.activeIndices = [];
     this.freeSlots = [];
     for (let i = this.maxActive - 1; i >= 0; i--) {
       this.freeSlots.push(i);
@@ -305,12 +322,15 @@ export class DeltaSplatDecoder {
       const slot = this.freeSlots.pop();
       if (slot === undefined) break;
       this.activeGaussians[slot] = birth;
+      this.activeIndices.push(slot);
       this.activeCount++;
     }
 
-    // 3. Update positions and decrement lifetimes
-    for (let i = 0; i < this.activeGaussians.length; i++) {
-      const g = this.activeGaussians[i];
+    // 3. Update positions and decrement lifetimes (iterate only active slots)
+    let writeIdx = 0;
+    for (let readIdx = 0; readIdx < this.activeIndices.length; readIdx++) {
+      const slot = this.activeIndices[readIdx];
+      const g = this.activeGaussians[slot];
       if (!g) continue;
 
       // Skip motion update for newly-born gaussians (they just spawned)
@@ -328,11 +348,17 @@ export class DeltaSplatDecoder {
 
       // Free expired gaussians
       if (g.remainingFrames <= 0) {
-        this.activeGaussians[i] = null;
-        this.freeSlots.push(i);
+        this.activeGaussians[slot] = null;
+        this.freeSlots.push(slot);
         this.activeCount--;
+        // Don't copy to writeIdx (effectively removes from activeIndices)
+      } else {
+        // Keep this slot in activeIndices (compacting in place)
+        this.activeIndices[writeIdx++] = slot;
       }
     }
+    // Truncate activeIndices to remove expired entries
+    this.activeIndices.length = writeIdx;
 
     // Debug log every 10 frames
     if (frameIndex % 10 === 0) {
@@ -479,8 +505,9 @@ export class DeltaSplatDecoder {
       this.sogTileData[i] = 255;
     }
 
-    let idx = 0;
-    for (const g of this.activeGaussians) {
+    // Iterate only active slots (much faster than sparse array iteration)
+    for (let idx = 0; idx < this.activeIndices.length; idx++) {
+      const g = this.activeGaussians[this.activeIndices[idx]];
       if (!g) continue;
 
       const row = Math.floor(idx / ts);
@@ -516,8 +543,6 @@ export class DeltaSplatDecoder {
       this.sogTileData.set(g.sh0Encoded, sh0Base);
 
       // t_scale: tile (2,1) - leave as zeros (not needed for delta, all active)
-
-      idx++;
     }
   }
 

@@ -386,6 +386,8 @@ export class SparkRenderer extends THREE.Mesh {
       rgbMinMaxLnScaleMinMax: {
         value: new THREE.Vector4(0, 1, LN_SCALE_MIN, LN_SCALE_MAX),
       },
+      // Quaternion transform mode for coordinate system debugging
+      quatTransformMode: { value: 0 },
       // Time in seconds for time-based effects
       time: { value: 0 },
       // Delta time in seconds since last frame
