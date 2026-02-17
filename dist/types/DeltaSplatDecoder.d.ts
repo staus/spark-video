@@ -62,6 +62,9 @@ export declare class DeltaSplatDecoder {
     private sogHeight;
     private sogTileData;
     private posEncodeBuf;
+    private gpuPositionBuffer;
+    private gpuAttributeBuffer;
+    private gpuTextureSize;
     constructor(metadata: Delta4DGSMetadata);
     loadDeltaFrames(webpBlob: Blob): Promise<void>;
     /**
@@ -75,6 +78,29 @@ export declare class DeltaSplatDecoder {
     processFrame(frameIndex: number): {
         data: Uint8Array;
         count: number;
+    };
+    /**
+     * GPU-optimized frame processing: returns float positions and uint8 attributes.
+     * Skips CPU-side signed-log encoding - positions uploaded as floats directly.
+     */
+    processFrameGPU(frameIndex: number): {
+        positions: Float32Array;
+        attributes: Uint8Array;
+        count: number;
+        textureSize: number;
+    };
+    /**
+     * Fill GPU output buffers with float positions and uint8 attributes.
+     * Much faster than _assembleSogTexture() - no position encoding.
+     */
+    private _fillGPUBuffers;
+    /**
+     * Get GPU texture dimensions for creating THREE.DataTexture
+     */
+    getGPUTextureDimensions(): {
+        positionSize: number;
+        attributeWidth: number;
+        attributeHeight: number;
     };
     reset(): void;
     private _processOneFrame;

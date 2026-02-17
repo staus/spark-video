@@ -143,6 +143,29 @@ export declare class PackedSplats {
      * Dispose GPU video mode resources
      */
     disposeVideoModeGPU(): void;
+    private gpuDeltaModeData;
+    /**
+     * Initialize GPU delta mode with float position input.
+     * Uses a simpler shader that reads float positions directly.
+     */
+    initDeltaModeGPU(metadata: DeltaModeMetadata): void;
+    /**
+     * Update splats from float positions and uint8 attributes.
+     * This bypasses the CPU signed-log encoding entirely.
+     */
+    updateFromDeltaTextureGPU(renderer: THREE.WebGLRenderer, positionTexture: THREE.DataTexture, attributeTexture: THREE.DataTexture, count: number): void;
+    /**
+     * Update the quaternion transform mode for delta mode
+     */
+    setDeltaQuatTransformMode(mode: number): void;
+    /**
+     * Update the max scale filter for delta mode
+     */
+    setDeltaMaxScaleFilter(maxScale: number): void;
+    /**
+     * Dispose GPU delta mode resources
+     */
+    disposeDeltaModeGPU(): void;
 }
 /**
  * SOG video metadata for initializing video mode
@@ -184,6 +207,14 @@ export type GPUVideoTileUVs = {
     scales: GPUVideoTileUV;
     sh0: GPUVideoTileUV;
     t_scale?: GPUVideoTileUV;
+};
+/**
+ * Metadata for initializing delta mode (float positions)
+ */
+export type DeltaModeMetadata = {
+    maxCount: number;
+    scaleCodebook: number[];
+    sh0Codebook: number[];
 };
 export declare const dynoPackedSplats: (packedSplats?: PackedSplats) => DynoPackedSplats;
 export declare class DynoPackedSplats extends DynoUniform<typeof TPackedSplats, "packedSplats", {

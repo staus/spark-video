@@ -113,6 +113,11 @@ export class DeltaSplatDecoder {
   // Pre-allocated position encoding buffer
   private posEncodeBuf: Uint8Array;
 
+  // GPU mode output buffers (float positions, no CPU encoding)
+  private gpuPositionBuffer: Float32Array;
+  private gpuAttributeBuffer: Uint8Array; // 3 rows: quats, scales, sh0
+  private gpuTextureSize: number; // Square texture side length
+
   constructor(metadata: Delta4DGSMetadata) {
     this.metadata = metadata;
     this.tileSize = metadata.tile_size;
@@ -168,8 +173,28 @@ export class DeltaSplatDecoder {
     // Pre-allocated position encoding buffer
     this.posEncodeBuf = new Uint8Array(6);
 
+    // GPU mode output buffers
+    // Position texture: square, power-of-2, fits maxActive gaussians
+    const gpuTexSide = Math.ceil(Math.sqrt(maxActive));
+    const gpuTexSizePow = Math.ceil(Math.log2(Math.max(gpuTexSide, 1)));
+    this.gpuTextureSize = 2 ** gpuTexSizePow;
+    // 4 floats per gaussian (RGBA32F, alpha unused)
+    this.gpuPositionBuffer = new Float32Array(
+      this.gpuTextureSize * this.gpuTextureSize * 4,
+    );
+    // Attribute texture: width = gpuTextureSize, height = gpuTextureSize * 3
+    // 3 "planes": quats, scales, sh0 - each plane is gpuTextureSize x gpuTextureSize
+    // Total: gpuTextureSize^2 * 3 * 4 bytes
+    this.gpuAttributeBuffer = new Uint8Array(
+      this.gpuTextureSize * this.gpuTextureSize * 3 * 4,
+    );
+
     console.log(
-      `DeltaSplatDecoder initialized: maxActive=${maxActive}, deltaTile=${this.tileSize}, sogTile=${this.sogTileSize}`,
+      `DeltaSplatDecoder initialized: maxActive=${maxActive}, deltaTile=${this.tileSize}, sogTile=${this.sogTileSize}, gpuTex=${this.gpuTextureSize}`,
+    );
+    console.log(
+      `GPU buffers: position=${this.gpuPositionBuffer.length} floats (${this.gpuTextureSize}x${this.gpuTextureSize}), ` +
+        `attributes=${this.gpuAttributeBuffer.length} bytes (${this.gpuTextureSize}x${this.gpuTextureSize * 3})`,
     );
   }
 
@@ -296,6 +321,105 @@ export class DeltaSplatDecoder {
     this._assembleSogTexture();
 
     return { data: this.sogTileData, count: this.activeCount };
+  }
+
+  /**
+   * GPU-optimized frame processing: returns float positions and uint8 attributes.
+   * Skips CPU-side signed-log encoding - positions uploaded as floats directly.
+   */
+  processFrameGPU(frameIndex: number): {
+    positions: Float32Array;
+    attributes: Uint8Array;
+    count: number;
+    textureSize: number;
+  } {
+    // Reset if we're starting over
+    if (frameIndex === 0 && this.currentFrameIndex !== 0) {
+      this.reset();
+    }
+
+    // Process all frames from current to target (handles sequential playback)
+    while (this.currentFrameIndex <= frameIndex) {
+      this._processOneFrame(this.currentFrameIndex);
+      this.currentFrameIndex++;
+    }
+
+    // Fill GPU buffers (no encoding, just copy floats and bytes)
+    this._fillGPUBuffers();
+
+    return {
+      positions: this.gpuPositionBuffer,
+      attributes: this.gpuAttributeBuffer,
+      count: this.activeCount,
+      textureSize: this.gpuTextureSize,
+    };
+  }
+
+  /**
+   * Fill GPU output buffers with float positions and uint8 attributes.
+   * Much faster than _assembleSogTexture() - no position encoding.
+   */
+  private _fillGPUBuffers(): void {
+    const texSize = this.gpuTextureSize;
+    const planeSize = texSize * texSize * 4; // bytes per attribute plane
+
+    // Clear buffers
+    this.gpuPositionBuffer.fill(0);
+    this.gpuAttributeBuffer.fill(0);
+
+    // Iterate active gaussians
+    for (let idx = 0; idx < this.activeIndices.length; idx++) {
+      const g = this.activeGaussians[this.activeIndices[idx]];
+      if (!g) continue;
+
+      // Position buffer: RGBA32F, 2D grid layout (alpha = 1.0)
+      const row = Math.floor(idx / texSize);
+      const col = idx % texSize;
+      const posBase = (row * texSize + col) * 4;
+      this.gpuPositionBuffer[posBase] = g.position[0];
+      this.gpuPositionBuffer[posBase + 1] = g.position[1];
+      this.gpuPositionBuffer[posBase + 2] = g.position[2];
+      this.gpuPositionBuffer[posBase + 3] = 1.0;
+
+      // Attribute buffer: 3 planes (quats, scales, sh0), same 2D layout as position
+      const pixelOffset = (row * texSize + col) * 4;
+
+      // Plane 0: quats
+      const quatsBase = pixelOffset;
+      this.gpuAttributeBuffer[quatsBase] = g.quatsEncoded[0];
+      this.gpuAttributeBuffer[quatsBase + 1] = g.quatsEncoded[1];
+      this.gpuAttributeBuffer[quatsBase + 2] = g.quatsEncoded[2];
+      this.gpuAttributeBuffer[quatsBase + 3] = g.quatsEncoded[3];
+
+      // Plane 1: scales
+      const scalesBase = planeSize + pixelOffset;
+      this.gpuAttributeBuffer[scalesBase] = g.scalesEncoded[0];
+      this.gpuAttributeBuffer[scalesBase + 1] = g.scalesEncoded[1];
+      this.gpuAttributeBuffer[scalesBase + 2] = g.scalesEncoded[2];
+      this.gpuAttributeBuffer[scalesBase + 3] = g.scalesEncoded[3];
+
+      // Plane 2: sh0
+      const sh0Base = planeSize * 2 + pixelOffset;
+      this.gpuAttributeBuffer[sh0Base] = g.sh0Encoded[0];
+      this.gpuAttributeBuffer[sh0Base + 1] = g.sh0Encoded[1];
+      this.gpuAttributeBuffer[sh0Base + 2] = g.sh0Encoded[2];
+      this.gpuAttributeBuffer[sh0Base + 3] = g.sh0Encoded[3];
+    }
+  }
+
+  /**
+   * Get GPU texture dimensions for creating THREE.DataTexture
+   */
+  getGPUTextureDimensions(): {
+    positionSize: number; // Square texture side (positionSize x positionSize)
+    attributeWidth: number; // Attribute texture width
+    attributeHeight: number; // Attribute texture height (gpuTextureSize * 3)
+  } {
+    return {
+      positionSize: this.gpuTextureSize,
+      attributeWidth: this.gpuTextureSize,
+      attributeHeight: this.gpuTextureSize * 3, // 3 planes: quats, scales, sh0
+    };
   }
 
   reset(): void {

@@ -5957,6 +5957,7 @@ const dyno = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty
 }, Symbol.toStringTag, { value: "Module" }));
 var computeUvec4_default = "precision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp usampler2D;\nprecision highp isampler2D;\nprecision highp sampler2DArray;\nprecision highp usampler2DArray;\nprecision highp isampler2DArray;\nprecision highp sampler3D;\nprecision highp usampler3D;\nprecision highp isampler3D;\n\n#include <splatDefines>\n\nuniform uint targetLayer;\nuniform int targetBase;\nuniform int targetCount;\n\nout uvec4 target;\n\n{{ GLOBALS }}\n\nvoid produceSplat(int index) {\n    {{ STATEMENTS }}\n}\n\nvoid main() {\n    int targetIndex = int(targetLayer << SPLAT_TEX_LAYER_BITS) + int(uint(gl_FragCoord.y) << SPLAT_TEX_WIDTH_BITS) + int(gl_FragCoord.x);\n    int index = targetIndex - targetBase;\n\n    if ((index >= 0) && (index < targetCount)) {\n        produceSplat(index);\n    } else {\n        target = uvec4(0u, 0u, 0u, 0u);\n    }\n}";
 var computeVec4_default = "precision highp float;\nprecision highp int;\nprecision highp sampler2D;\nprecision highp usampler2D;\nprecision highp isampler2D;\nprecision highp sampler2DArray;\nprecision highp usampler2DArray;\nprecision highp isampler2DArray;\nprecision highp sampler3D;\nprecision highp usampler3D;\nprecision highp isampler3D;\n\n#include <splatDefines>\n\nuniform uint targetLayer;\nuniform int targetBase;\nuniform int targetCount;\n\nout vec4 target;\n\n{{ GLOBALS }}\n\nvoid computeReadback(int index) {\n    {{ STATEMENTS }}\n}\n\nvoid main() {\n    int targetIndex = int(targetLayer << SPLAT_TEX_LAYER_BITS) + int(uint(gl_FragCoord.y) << SPLAT_TEX_WIDTH_BITS) + int(gl_FragCoord.x);\n    int index = targetIndex - targetBase;\n\n    if ((index >= 0) && (index < targetCount)) {\n        computeReadback(index);\n    } else {\n        target = vec4(0.0, 0.0, 0.0, 0.0);\n    }\n}";
+var deltaDecodeFloat_default = "precision highp float;\nprecision highp int;\nprecision highp sampler2D;\n\n#include <splatDefines>\n\nuniform uint targetLayer;\nuniform int targetBase;\nuniform int targetCount;\n\nuniform sampler2D positionTexture;\nuniform int positionTextureSize;  \n\nuniform sampler2D attributeTexture;\nuniform int attributeTextureSize;  \n\nuniform sampler2D scaleCodebook;\nuniform sampler2D sh0Codebook;\n\nuniform int splatCount;\n\nuniform vec4 rgbMinMaxLnScaleMinMax;\n\nuniform int quatTransformMode;\n\nuniform float maxScaleFilter;\n\nout uvec4 target;\n\nconst float SQRT2 = 1.41421356237;\nconst float SH_C0 = 0.28209479177387814;\n\nvec4 quatMul(vec4 a, vec4 b) {\n    return vec4(\n        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,\n        a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,\n        a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,\n        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z\n    );\n}\n\nvec4 applyQuatTransformLocal(vec4 q) {\n    float s45 = 0.70710678118;\n    vec4 rotX90 = vec4(s45, 0.0, 0.0, s45);\n    vec4 rotX180 = vec4(1.0, 0.0, 0.0, 0.0);\n    vec4 rotX270 = vec4(s45, 0.0, 0.0, -s45);\n    vec4 rotY90 = vec4(0.0, s45, 0.0, s45);\n    vec4 rotY180 = vec4(0.0, 1.0, 0.0, 0.0);\n    vec4 rotY270 = vec4(0.0, s45, 0.0, -s45);\n    vec4 rotZ90 = vec4(0.0, 0.0, s45, s45);\n    vec4 rotZ180 = vec4(0.0, 0.0, 1.0, 0.0);\n    vec4 rotZ270 = vec4(0.0, 0.0, s45, -s45);\n\n    vec4 result = q;\n\n    if (quatTransformMode == 0) { result = q; }\n    else if (quatTransformMode == 1) { result = quatMul(rotX90, q); }\n    else if (quatTransformMode == 2) { result = quatMul(rotX270, q); }\n    else if (quatTransformMode == 3) { result = quatMul(rotX180, q); }\n    else if (quatTransformMode == 4) { result = quatMul(rotY90, q); }\n    else if (quatTransformMode == 5) { result = quatMul(rotY270, q); }\n    else if (quatTransformMode == 6) { result = quatMul(rotY180, q); }\n    else if (quatTransformMode == 7) { result = quatMul(rotZ90, q); }\n    else if (quatTransformMode == 8) { result = quatMul(rotZ270, q); }\n    else if (quatTransformMode == 9) { result = quatMul(rotZ180, q); }\n    else if (quatTransformMode == 10) { result = vec4(q.y, q.x, q.z, q.w); }\n    else if (quatTransformMode == 11) { result = vec4(q.z, q.y, q.x, q.w); }\n    else if (quatTransformMode == 12) { result = vec4(q.x, q.z, q.y, q.w); }\n    else if (quatTransformMode == 13) { result = vec4(-q.x, q.y, q.z, q.w); }\n    else if (quatTransformMode == 14) { result = vec4(q.x, -q.y, q.z, q.w); }\n    else if (quatTransformMode == 15) { result = vec4(q.x, q.y, -q.z, q.w); }\n    else if (quatTransformMode == 16) { result = vec4(q.x, q.y, q.z, -q.w); }\n    else if (quatTransformMode == 17) { result = vec4(-q.x, -q.y, q.z, q.w); }\n    else if (quatTransformMode == 18) { result = vec4(-q.x, q.y, -q.z, q.w); }\n    else if (quatTransformMode == 19) { result = vec4(q.x, -q.y, -q.z, q.w); }\n    else if (quatTransformMode == 20) { result = quatMul(rotX90, q); result = vec4(result.x, result.z, result.y, result.w); }\n    else if (quatTransformMode == 21) { result = quatMul(rotX270, q); result = vec4(result.x, result.z, result.y, result.w); }\n    else if (quatTransformMode == 22) { result = vec4(-q.x, -q.y, -q.z, q.w); }\n    else if (quatTransformMode == 23) { result = vec4(q.x, q.z, -q.y, q.w); }\n    else if (quatTransformMode == 24) { result = vec4(q.x, -q.z, q.y, q.w); }\n    else if (quatTransformMode == 25) { result = quatMul(rotX90, q); result = vec4(result.x, result.y, -result.z, result.w); }\n    else if (quatTransformMode == 26) { result = quatMul(rotX270, q); result = vec4(result.x, result.y, -result.z, result.w); }\n    else if (quatTransformMode == 27) { result = quatMul(rotX90, q); result = vec4(result.x, -result.y, result.z, result.w); }\n    else if (quatTransformMode == 28) { result = quatMul(rotX270, q); result = vec4(result.x, -result.y, result.z, result.w); }\n    else if (quatTransformMode == 29) { result = vec4(q.w, q.x, q.y, q.z); }\n    else if (quatTransformMode == 30) { result = vec4(q.y, q.z, q.w, q.x); }\n    else if (quatTransformMode == 31) { result = vec4(q.z, q.w, q.x, q.y); }\n\n    return normalize(result);\n}\n\nvec3 samplePosition(int splatIndex) {\n    int x = splatIndex % positionTextureSize;\n    int y = splatIndex / positionTextureSize;\n    return texelFetch(positionTexture, ivec2(x, y), 0).rgb;\n}\n\nvec4 sampleAttribute(int splatIndex, int row) {\n    int x = splatIndex % attributeTextureSize;\n    int y = splatIndex / attributeTextureSize;\n    \n    return texelFetch(attributeTexture, ivec2(x, row * attributeTextureSize + y), 0);\n}\n\nvec4 decodeQuaternion(int splatIndex) {\n    vec4 quatsRaw = sampleAttribute(splatIndex, 0);\n    float qr = floor(quatsRaw.r * 255.0 + 0.5);\n    float qg = floor(quatsRaw.g * 255.0 + 0.5);\n    float qb = floor(quatsRaw.b * 255.0 + 0.5);\n    float qa = floor(quatsRaw.a * 255.0 + 0.5);\n\n    float r0 = (qr / 255.0 - 0.5) * SQRT2;\n    float r1 = (qg / 255.0 - 0.5) * SQRT2;\n    float r2 = (qb / 255.0 - 0.5) * SQRT2;\n    float rr = sqrt(max(0.0, 1.0 - r0*r0 - r1*r1 - r2*r2));\n\n    int rOrder = int(qa) - 252;\n    vec4 quat;\n    if (rOrder == 0) { quat = vec4(r0, r1, r2, rr); }\n    else if (rOrder == 1) { quat = vec4(rr, r1, r2, r0); }\n    else if (rOrder == 2) { quat = vec4(r1, rr, r2, r0); }\n    else { quat = vec4(r1, r2, rr, r0); }\n\n    return normalize(quat);\n}\n\nvec3 decodeScales(int splatIndex) {\n    vec4 scalesRaw = sampleAttribute(splatIndex, 1);\n    float idxX = floor(scalesRaw.r * 255.0 + 0.5);\n    float idxY = floor(scalesRaw.g * 255.0 + 0.5);\n    float idxZ = floor(scalesRaw.b * 255.0 + 0.5);\n\n    float logScaleX = texture(scaleCodebook, vec2((idxX + 0.5) / 256.0, 0.5)).r;\n    float logScaleY = texture(scaleCodebook, vec2((idxY + 0.5) / 256.0, 0.5)).r;\n    float logScaleZ = texture(scaleCodebook, vec2((idxZ + 0.5) / 256.0, 0.5)).r;\n\n    return vec3(exp(logScaleX), exp(logScaleY), exp(logScaleZ));\n}\n\nvec4 decodeRGBA(int splatIndex) {\n    vec4 sh0Raw = sampleAttribute(splatIndex, 2);\n\n    float idxR = floor(sh0Raw.r * 255.0 + 0.5);\n    float idxG = floor(sh0Raw.g * 255.0 + 0.5);\n    float idxB = floor(sh0Raw.b * 255.0 + 0.5);\n\n    float sh0R = texture(sh0Codebook, vec2((idxR + 0.5) / 256.0, 0.5)).r;\n    float sh0G = texture(sh0Codebook, vec2((idxG + 0.5) / 256.0, 0.5)).r;\n    float sh0B = texture(sh0Codebook, vec2((idxB + 0.5) / 256.0, 0.5)).r;\n\n    float colorR = SH_C0 * sh0R + 0.5;\n    float colorG = SH_C0 * sh0G + 0.5;\n    float colorB = SH_C0 * sh0B + 0.5;\n    float opacity = sh0Raw.a;\n\n    return vec4(clamp(colorR, 0.0, 1.0), clamp(colorG, 0.0, 1.0), clamp(colorB, 0.0, 1.0), opacity);\n}\n\nvoid main() {\n    int targetIndex = int(targetLayer << SPLAT_TEX_LAYER_BITS) +\n                     int(uint(gl_FragCoord.y) << SPLAT_TEX_WIDTH_BITS) +\n                     int(gl_FragCoord.x);\n    int splatIndex = targetIndex - targetBase;\n\n    if (splatIndex >= 0 && splatIndex < targetCount && splatIndex < splatCount) {\n        \n        vec3 center = samplePosition(splatIndex);\n\n        \n        vec4 quaternion = decodeQuaternion(splatIndex);\n        vec3 scales = decodeScales(splatIndex);\n        vec4 rgba = decodeRGBA(splatIndex);\n\n        \n        quaternion = applyQuatTransformLocal(quaternion);\n\n        \n        if (maxScaleFilter > 0.0) {\n            float maxAxis = max(scales.x, max(scales.y, scales.z));\n            if (maxAxis > maxScaleFilter) {\n                rgba.a = 0.0;\n            }\n        }\n\n        \n        target = packSplatEncoding(center, scales, quaternion, rgba, rgbMinMaxLnScaleMinMax);\n    } else {\n        target = uvec4(0u, 0u, 0u, 0u);\n    }\n}";
 var splatDefines_default = "const float LN_SCALE_MIN = -36.0;\nconst float LN_SCALE_MAX = 9.0;\n\nconst uint SPLAT_TEX_WIDTH_BITS = 11u;\nconst uint SPLAT_TEX_HEIGHT_BITS = 11u;\nconst uint SPLAT_TEX_DEPTH_BITS = 11u;\nconst uint SPLAT_TEX_LAYER_BITS = SPLAT_TEX_WIDTH_BITS + SPLAT_TEX_HEIGHT_BITS;\n\nconst uint SPLAT_TEX_WIDTH = 1u << SPLAT_TEX_WIDTH_BITS;\nconst uint SPLAT_TEX_HEIGHT = 1u << SPLAT_TEX_HEIGHT_BITS;\nconst uint SPLAT_TEX_DEPTH = 1u << SPLAT_TEX_DEPTH_BITS;\n\nconst uint SPLAT_TEX_WIDTH_MASK = SPLAT_TEX_WIDTH - 1u;\nconst uint SPLAT_TEX_HEIGHT_MASK = SPLAT_TEX_HEIGHT - 1u;\nconst uint SPLAT_TEX_DEPTH_MASK = SPLAT_TEX_DEPTH - 1u;\n\nconst uint F16_INF = 0x7c00u;\nconst float PI = 3.1415926535897932384626433832795;\n\nconst float INFINITY = 1.0 / 0.0;\nconst float NEG_INFINITY = -INFINITY;\n\nfloat sqr(float x) {\n    return x * x;\n}\n\nvec3 srgbToLinear(vec3 rgb) {\n    return pow(rgb, vec3(2.2));\n}\n\nuint encodeQuatOctXy88R8(vec4 q) {\n    \n    if (q.w < 0.0) {\n        q = -q;\n    }\n    \n    float theta = 2.0 * acos(q.w);\n    float halfTheta = theta * 0.5;\n    float s = sin(halfTheta);\n    \n    vec3 axis = (abs(s) < 1e-6) ? vec3(1.0, 0.0, 0.0) : q.xyz / s;\n    \n    \n    \n    float sum = abs(axis.x) + abs(axis.y) + abs(axis.z);\n    vec2 p = vec2(axis.x, axis.y) / sum;\n    \n    if (axis.z < 0.0) {\n        float oldPx = p.x;\n        p.x = (1.0 - abs(p.y)) * (p.x >= 0.0 ? 1.0 : -1.0);\n        p.y = (1.0 - abs(oldPx)) * (p.y >= 0.0 ? 1.0 : -1.0);\n    }\n    \n    float u_f = p.x * 0.5 + 0.5;\n    float v_f = p.y * 0.5 + 0.5;\n    \n    uint quantU = uint(clamp(round(u_f * 255.0), 0.0, 255.0));\n    uint quantV = uint(clamp(round(v_f * 255.0), 0.0, 255.0));\n    \n    \n    \n    uint angleInt = uint(clamp(round((theta / 3.14159265359) * 255.0), 0.0, 255.0));\n    \n    \n    return (angleInt << 16u) | (quantV << 8u) | quantU;\n}\n\nvec4 decodeQuatOctXy88R8(uint encoded) {\n    \n    uint quantU = encoded & uint(0xFFu);               \n    uint quantV = (encoded >> 8u) & uint(0xFFu);         \n    uint angleInt = encoded >> 16u;                      \n\n    \n    float u_f = float(quantU) / 255.0;\n    float v_f = float(quantV) / 255.0;\n    vec2 f = vec2(u_f * 2.0 - 1.0, v_f * 2.0 - 1.0);\n\n    vec3 axis = vec3(f.xy, 1.0 - abs(f.x) - abs(f.y));\n    float t = max(-axis.z, 0.0);\n    axis.x += (axis.x >= 0.0) ? -t : t;\n    axis.y += (axis.y >= 0.0) ? -t : t;\n    axis = normalize(axis);\n    \n    \n    float theta = (float(angleInt) / 255.0) * 3.14159265359;\n    float halfTheta = theta * 0.5;\n    float s = sin(halfTheta);\n    float w = cos(halfTheta);\n    \n    return vec4(axis * s, w);\n}\n\nuvec4 packSplatEncoding(\n    vec3 center, vec3 scales, vec4 quaternion, vec4 rgba, vec4 rgbMinMaxLnScaleMinMax\n) {\n    float rgbMin = rgbMinMaxLnScaleMinMax.x;\n    float rgbMax = rgbMinMaxLnScaleMinMax.y;\n    vec3 encRgb = (rgba.rgb - vec3(rgbMin)) / (rgbMax - rgbMin);\n    uvec4 uRgba = uvec4(round(clamp(vec4(encRgb, rgba.a) * 255.0, 0.0, 255.0)));\n\n    uint uQuat = encodeQuatOctXy88R8(quaternion);\n    uvec3 uQuat3 = uvec3(uQuat & 0xffu, (uQuat >> 8u) & 0xffu, (uQuat >> 16u) & 0xffu);\n\n    \n    float lnScaleMin = rgbMinMaxLnScaleMinMax.z;\n    float lnScaleMax = rgbMinMaxLnScaleMinMax.w;\n    float lnScaleScale = 254.0 / (lnScaleMax - lnScaleMin);\n    uvec3 uScales = uvec3(\n        (scales.x == 0.0) ? 0u : uint(round(clamp((log(scales.x) - lnScaleMin) * lnScaleScale, 0.0, 254.0))) + 1u,\n        (scales.y == 0.0) ? 0u : uint(round(clamp((log(scales.y) - lnScaleMin) * lnScaleScale, 0.0, 254.0))) + 1u,\n        (scales.z == 0.0) ? 0u : uint(round(clamp((log(scales.z) - lnScaleMin) * lnScaleScale, 0.0, 254.0))) + 1u\n    );\n\n    \n    uint word0 = uRgba.r | (uRgba.g << 8u) | (uRgba.b << 16u) | (uRgba.a << 24u);\n    uint word1 = packHalf2x16(center.xy);\n    uint word2 = packHalf2x16(vec2(center.z, 0.0)) | (uQuat3.x << 16u) | (uQuat3.y << 24u);\n    uint word3 = uScales.x | (uScales.y << 8u) | (uScales.z << 16u) | (uQuat3.z << 24u);\n    return uvec4(word0, word1, word2, word3);\n}\n\nuvec4 packSplat(vec3 center, vec3 scales, vec4 quaternion, vec4 rgba) {\n    return packSplatEncoding(center, scales, quaternion, rgba, vec4(0.0, 1.0, LN_SCALE_MIN, LN_SCALE_MAX));\n}\n\nvoid unpackSplatEncoding(uvec4 packed, out vec3 center, out vec3 scales, out vec4 quaternion, out vec4 rgba, vec4 rgbMinMaxLnScaleMinMax) {\n    uint word0 = packed.x, word1 = packed.y, word2 = packed.z, word3 = packed.w;\n\n    uvec4 uRgba = uvec4(word0 & 0xffu, (word0 >> 8u) & 0xffu, (word0 >> 16u) & 0xffu, (word0 >> 24u) & 0xffu);\n    float rgbMin = rgbMinMaxLnScaleMinMax.x;\n    float rgbMax = rgbMinMaxLnScaleMinMax.y;\n    rgba = (vec4(uRgba) / 255.0);\n    rgba.rgb = rgba.rgb * (rgbMax - rgbMin) + rgbMin;\n\n    center = vec4(\n        unpackHalf2x16(word1),\n        unpackHalf2x16(word2 & 0xffffu)\n    ).xyz;\n\n    uvec3 uScales = uvec3(word3 & 0xffu, (word3 >> 8u) & 0xffu, (word3 >> 16u) & 0xffu);\n    float lnScaleMin = rgbMinMaxLnScaleMinMax.z;\n    float lnScaleMax = rgbMinMaxLnScaleMinMax.w;\n    float lnScaleScale = (lnScaleMax - lnScaleMin) / 254.0;\n    scales = vec3(\n        (uScales.x == 0u) ? 0.0 : exp(lnScaleMin + float(uScales.x - 1u) * lnScaleScale),\n        (uScales.y == 0u) ? 0.0 : exp(lnScaleMin + float(uScales.y - 1u) * lnScaleScale),\n        (uScales.z == 0u) ? 0.0 : exp(lnScaleMin + float(uScales.z - 1u) * lnScaleScale)\n    );\n\n    uint uQuat = ((word2 >> 16u) & 0xFFFFu) | ((word3 >> 8u) & 0xFF0000u);\n    quaternion = decodeQuatOctXy88R8(uQuat);\n}\n\nvoid unpackSplat(uvec4 packed, out vec3 center, out vec3 scales, out vec4 quaternion, out vec4 rgba) {\n    unpackSplatEncoding(packed, center, scales, quaternion, rgba, vec4(0.0, 1.0, LN_SCALE_MIN, LN_SCALE_MAX));\n}\n\nvec3 quatVec(vec4 q, vec3 v) {\n    \n    vec3 t = 2.0 * cross(q.xyz, v);\n    return v + q.w * t + cross(q.xyz, t);\n}\n\nvec4 quatQuat(vec4 q1, vec4 q2) {\n    return vec4(\n        q1.w * q2.x + q1.x * q2.w + q1.y * q2.z - q1.z * q2.y,\n        q1.w * q2.y - q1.x * q2.z + q1.y * q2.w + q1.z * q2.x,\n        q1.w * q2.z + q1.x * q2.y - q1.y * q2.x + q1.z * q2.w,\n        q1.w * q2.w - q1.x * q2.x - q1.y * q2.y - q1.z * q2.z\n    );\n}\n\nmat3 scaleQuaternionToMatrix(vec3 s, vec4 q) {\n    \n    return mat3(\n        s.x * (1.0 - 2.0 * (q.y * q.y + q.z * q.z)),\n        s.x * (2.0 * (q.x * q.y + q.w * q.z)),\n        s.x * (2.0 * (q.x * q.z - q.w * q.y)),\n        s.y * (2.0 * (q.x * q.y - q.w * q.z)),\n        s.y * (1.0 - 2.0 * (q.x * q.x + q.z * q.z)),\n        s.y * (2.0 * (q.y * q.z + q.w * q.x)),\n        s.z * (2.0 * (q.x * q.z + q.w * q.y)),\n        s.z * (2.0 * (q.y * q.z - q.w * q.x)),\n        s.z * (1.0 - 2.0 * (q.x * q.x + q.y * q.y))\n    );\n}\n\nivec3 splatTexCoord(int index) {\n    uint x = uint(index) & SPLAT_TEX_WIDTH_MASK;\n    uint y = (uint(index) >> SPLAT_TEX_WIDTH_BITS) & SPLAT_TEX_HEIGHT_MASK;\n    uint z = uint(index) >> SPLAT_TEX_LAYER_BITS;\n    return ivec3(x, y, z);\n}\n\nvec4 applyQuatTransform(vec4 q, int mode) {\n    if (mode == 0) return q; \n\n    \n    float s45 = 0.70710678118; \n\n    vec4 rotX90 = vec4(s45, 0.0, 0.0, s45);\n    vec4 rotX180 = vec4(1.0, 0.0, 0.0, 0.0);\n    vec4 rotX270 = vec4(s45, 0.0, 0.0, -s45);\n    vec4 rotY90 = vec4(0.0, s45, 0.0, s45);\n    vec4 rotY180 = vec4(0.0, 1.0, 0.0, 0.0);\n    vec4 rotY270 = vec4(0.0, s45, 0.0, -s45);\n    vec4 rotZ90 = vec4(0.0, 0.0, s45, s45);\n    vec4 rotZ180 = vec4(0.0, 0.0, 1.0, 0.0);\n    vec4 rotZ270 = vec4(0.0, 0.0, s45, -s45);\n\n    vec4 result = q;\n\n    if (mode == 1) { result = quatQuat(rotX90, q); }\n    else if (mode == 2) { result = quatQuat(rotX270, q); }\n    else if (mode == 3) { result = quatQuat(rotX180, q); }\n    else if (mode == 4) { result = quatQuat(rotY90, q); }\n    else if (mode == 5) { result = quatQuat(rotY270, q); }\n    else if (mode == 6) { result = quatQuat(rotY180, q); }\n    else if (mode == 7) { result = quatQuat(rotZ90, q); }\n    else if (mode == 8) { result = quatQuat(rotZ270, q); }\n    else if (mode == 9) { result = quatQuat(rotZ180, q); }\n    else if (mode == 10) { result = vec4(q.y, q.x, q.z, q.w); } \n    else if (mode == 11) { result = vec4(q.z, q.y, q.x, q.w); } \n    else if (mode == 12) { result = vec4(q.x, q.z, q.y, q.w); } \n    else if (mode == 13) { result = vec4(-q.x, q.y, q.z, q.w); } \n    else if (mode == 14) { result = vec4(q.x, -q.y, q.z, q.w); } \n    else if (mode == 15) { result = vec4(q.x, q.y, -q.z, q.w); } \n    else if (mode == 16) { result = vec4(q.x, q.y, q.z, -q.w); } \n    else if (mode == 17) { result = vec4(-q.x, -q.y, q.z, q.w); } \n    else if (mode == 18) { result = vec4(-q.x, q.y, -q.z, q.w); } \n    else if (mode == 19) { result = vec4(q.x, -q.y, -q.z, q.w); } \n    else if (mode == 20) { result = quatQuat(rotX90, q); result = vec4(result.x, result.z, result.y, result.w); }\n    else if (mode == 21) { result = quatQuat(rotX270, q); result = vec4(result.x, result.z, result.y, result.w); }\n    else if (mode == 22) { result = vec4(-q.x, -q.y, -q.z, q.w); } \n    else if (mode == 23) { result = vec4(q.x, q.z, -q.y, q.w); } \n    else if (mode == 24) { result = vec4(q.x, -q.z, q.y, q.w); } \n    else if (mode == 25) { result = quatQuat(rotX90, q); result = vec4(result.x, result.y, -result.z, result.w); }\n    else if (mode == 26) { result = quatQuat(rotX270, q); result = vec4(result.x, result.y, -result.z, result.w); }\n    else if (mode == 27) { result = quatQuat(rotX90, q); result = vec4(result.x, -result.y, result.z, result.w); }\n    else if (mode == 28) { result = quatQuat(rotX270, q); result = vec4(result.x, -result.y, result.z, result.w); }\n    else if (mode == 29) { result = vec4(q.w, q.x, q.y, q.z); } \n    else if (mode == 30) { result = vec4(q.y, q.z, q.w, q.x); } \n    else if (mode == 31) { result = vec4(q.z, q.w, q.x, q.y); } \n\n    return normalize(result);\n}";
 var splatFragment_default = "precision highp float;\nprecision highp int;\n\n#include <splatDefines>\n#include <logdepthbuf_pars_fragment>\n\nuniform float near;\nuniform float far;\nuniform bool encodeLinear;\nuniform float time;\nuniform bool debugFlag;\nuniform float maxStdDev;\nuniform float minAlpha;\nuniform bool stochastic;\nuniform bool disableFalloff;\nuniform float falloff;\n\nuniform bool splatTexEnable;\nuniform sampler3D splatTexture;\nuniform mat2 splatTexMul;\nuniform vec2 splatTexAdd;\nuniform float splatTexNear;\nuniform float splatTexFar;\nuniform float splatTexMid;\n\nout vec4 fragColor;\n\nin vec4 vRgba;\nin vec2 vSplatUv;\nin vec3 vNdc;\nflat in uint vSplatIndex;\n\nvoid main() {\n    vec4 rgba = vRgba;\n\n    float z = dot(vSplatUv, vSplatUv);\n    if (!splatTexEnable) {\n        if (z > (maxStdDev * maxStdDev)) {\n            discard;\n        }\n    } else {\n        vec2 uv = splatTexMul * vSplatUv + splatTexAdd;\n        float ndcZ = vNdc.z;\n        float depth = (2.0 * near * far) / (far + near - ndcZ * (far - near));\n        float clampedFar = max(splatTexFar, splatTexNear);\n        float clampedDepth = clamp(depth, splatTexNear, clampedFar);\n        float logDepth = log2(clampedDepth + 1.0);\n        float logNear = log2(splatTexNear + 1.0);\n        float logFar = log2(clampedFar + 1.0);\n\n        float texZ;\n        if (splatTexMid > 0.0) {\n            float clampedMid = clamp(splatTexMid, splatTexNear, clampedFar);\n            float logMid = log2(clampedMid + 1.0);\n            texZ = (clampedDepth <= clampedMid) ?\n                (0.5 * ((logDepth - logNear) / (logMid - logNear))) :\n                (0.5 * ((logDepth - logMid) / (logFar - logMid)) + 0.5);\n        } else {\n            texZ = (logDepth - logNear) / (logFar - logNear);\n        }\n\n        vec4 modulate = texture(splatTexture, vec3(uv, 1.0 - texZ));\n        rgba *= modulate;\n    }\n\n    rgba.a *= mix(1.0, exp(-0.5 * z), falloff);\n\n    if (rgba.a < minAlpha) {\n        discard;\n    }\n    if (encodeLinear) {\n        rgba.rgb = srgbToLinear(rgba.rgb);\n    }\n\n    if (stochastic) {\n        const bool STEADY = false;\n        uint uTime = STEADY ? 0u : floatBitsToUint(time);\n        uvec2 coord = uvec2(gl_FragCoord.xy);\n        uint state = uTime + 0x9e3779b9u * coord.x + 0x85ebca6bu * coord.y + 0xc2b2ae35u * uint(vSplatIndex);\n        state = state * 747796405u + 2891336453u;\n        uint hash = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;\n        hash = (hash >> 22u) ^ hash;\n        float rand = float(hash) / 4294967296.0;\n        if (rand < rgba.a) {\n            fragColor = vec4(rgba.rgb, 1.0);\n        } else {\n            discard;\n        }\n    } else {\n        #ifdef PREMULTIPLIED_ALPHA\n            fragColor = vec4(rgba.rgb * rgba.a, rgba.a);\n        #else\n            fragColor = rgba;\n        #endif\n    }\n    #include <logdepthbuf_fragment>\n}";
 var splatVertex_default = "precision highp float;\nprecision highp int;\nprecision highp usampler2DArray;\n\n#include <splatDefines>\n#include <logdepthbuf_pars_vertex>\n\nattribute uint splatIndex;\n\nout vec4 vRgba;\nout vec2 vSplatUv;\nout vec3 vNdc;\nflat out uint vSplatIndex;\n\nuniform vec2 renderSize;\nuniform uint numSplats;\nuniform vec4 renderToViewQuat;\nuniform vec3 renderToViewPos;\nuniform float maxStdDev;\nuniform float minPixelRadius;\nuniform float maxPixelRadius;\nuniform float time;\nuniform float deltaTime;\nuniform bool debugFlag;\nuniform float minAlpha;\nuniform bool stochastic;\nuniform bool enable2DGS;\nuniform float blurAmount;\nuniform float preBlurAmount;\nuniform float focalDistance;\nuniform float apertureAngle;\nuniform float clipXY;\nuniform float focalAdjustment;\n\nuniform usampler2DArray packedSplats;\nuniform vec4 rgbMinMaxLnScaleMinMax;\nuniform int quatTransformMode;\n\n#ifdef USE_LOGDEPTHBUF\n    bool isPerspectiveMatrix( mat4 m ) {\n      return m[ 2 ][ 3 ] == - 1.0;\n    }\n#endif\n\nvoid main() {\n    \n    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);\n\n    if (uint(gl_InstanceID) >= numSplats) {\n        return;\n    }\n\n    ivec3 texCoord;\n    if (stochastic) {\n        texCoord = ivec3(\n            uint(gl_InstanceID) & SPLAT_TEX_WIDTH_MASK,\n            (uint(gl_InstanceID) >> SPLAT_TEX_WIDTH_BITS) & SPLAT_TEX_HEIGHT_MASK,\n            (uint(gl_InstanceID) >> SPLAT_TEX_LAYER_BITS)\n        );\n    } else {\n        if (splatIndex == 0xffffffffu) {\n            \n            return;\n        }\n        texCoord = ivec3(\n            splatIndex & SPLAT_TEX_WIDTH_MASK,\n            (splatIndex >> SPLAT_TEX_WIDTH_BITS) & SPLAT_TEX_HEIGHT_MASK,\n            splatIndex >> SPLAT_TEX_LAYER_BITS\n        );\n    }\n    uvec4 packed = texelFetch(packedSplats, texCoord, 0);\n\n    vec3 center, scales;\n    vec4 quaternion, rgba;\n    unpackSplatEncoding(packed, center, scales, quaternion, rgba, rgbMinMaxLnScaleMinMax);\n\n    \n    quaternion = applyQuatTransform(quaternion, quatTransformMode);\n\n    if (rgba.a < minAlpha) {\n        return;\n    }\n    bvec3 zeroScales = equal(scales, vec3(0.0));\n    if (all(zeroScales)) {\n        return;\n    }\n\n    \n    vec3 viewCenter = quatVec(renderToViewQuat, center) + renderToViewPos;\n\n    \n    if (viewCenter.z >= 0.0) {\n        return;\n    }\n\n    \n    vec4 clipCenter = projectionMatrix * vec4(viewCenter, 1.0);\n\n    \n    if (abs(clipCenter.z) >= clipCenter.w) {\n        return;\n    }\n\n    \n    float clip = clipXY * clipCenter.w;\n    if (abs(clipCenter.x) > clip || abs(clipCenter.y) > clip) {\n        return;\n    }\n\n    \n    vSplatIndex = splatIndex;\n\n    \n    vec4 viewQuaternion = quatQuat(renderToViewQuat, quaternion);\n\n    if (enable2DGS && any(zeroScales)) {\n        vRgba = rgba;\n        vSplatUv = position.xy * maxStdDev;\n\n        vec3 offset;\n        if (zeroScales.z) {\n            offset = vec3(vSplatUv.xy * scales.xy, 0.0);\n        } else if (zeroScales.y) {\n            offset = vec3(vSplatUv.x * scales.x, 0.0, vSplatUv.y * scales.z);\n        } else {\n            offset = vec3(0.0, vSplatUv.xy * scales.yz);\n        }\n\n        vec3 viewPos = viewCenter + quatVec(viewQuaternion, offset);\n        gl_Position = projectionMatrix * vec4(viewPos, 1.0);\n        vNdc = gl_Position.xyz / gl_Position.w;\n        return;\n    }\n\n    \n    vec3 ndcCenter = clipCenter.xyz / clipCenter.w;\n\n    \n    mat3 RS = scaleQuaternionToMatrix(scales, viewQuaternion);\n    mat3 cov3D = RS * transpose(RS);\n\n    \n    vec2 scaledRenderSize = renderSize * focalAdjustment;\n    vec2 focal = 0.5 * scaledRenderSize * vec2(projectionMatrix[0][0], projectionMatrix[1][1]);\n\n    mat3 J;\n    if(isOrthographic) {\n        J = mat3(\n            focal.x, 0.0, 0.0,\n            0.0, focal.y, 0.0,\n            0.0, 0.0, 0.0\n        );\n    } else {\n        float invZ = 1.0 / viewCenter.z;\n        vec2 J1 = focal * invZ;\n        vec2 J2 = -(J1 * viewCenter.xy) * invZ;\n        J = mat3(\n            J1.x, 0.0, J2.x,\n            0.0, J1.y, J2.y,\n            0.0, 0.0, 0.0\n        );\n    }\n\n    \n    mat3 cov2D = transpose(J) * cov3D * J;\n    float a = cov2D[0][0];\n    float d = cov2D[1][1];\n    float b = cov2D[0][1];\n\n    \n    a += preBlurAmount;\n    d += preBlurAmount;\n\n    float fullBlurAmount = blurAmount;\n    if ((focalDistance > 0.0) && (apertureAngle > 0.0)) {\n        float focusRadius = maxPixelRadius;\n        if (viewCenter.z < 0.0) {\n            float focusBlur = abs((-viewCenter.z - focalDistance) / viewCenter.z);\n            float apertureRadius = focal.x * tan(0.5 * apertureAngle);\n            focusRadius = focusBlur * apertureRadius;\n        }\n        fullBlurAmount = clamp(sqr(focusRadius), blurAmount, sqr(maxPixelRadius));\n    }\n\n    \n    float detOrig = a * d - b * b;\n    a += fullBlurAmount;\n    d += fullBlurAmount;\n    float det = a * d - b * b;\n\n    \n    float blurAdjust = sqrt(max(0.0, detOrig / det));\n    rgba.a *= blurAdjust;\n    if (rgba.a < minAlpha) {\n        return;\n    }\n\n    \n    float eigenAvg = 0.5 * (a + d);\n    float eigenDelta = sqrt(max(0.0, eigenAvg * eigenAvg - det));\n    float eigen1 = eigenAvg + eigenDelta;\n    float eigen2 = eigenAvg - eigenDelta;\n\n    vec2 eigenVec1 = normalize(vec2((abs(b) < 0.001) ? 1.0 : b, eigen1 - a));\n    vec2 eigenVec2 = vec2(eigenVec1.y, -eigenVec1.x);\n\n    float scale1 = min(maxPixelRadius, maxStdDev * sqrt(eigen1));\n    float scale2 = min(maxPixelRadius, maxStdDev * sqrt(eigen2));\n    if (scale1 < minPixelRadius && scale2 < minPixelRadius) {\n        return;\n    }\n\n    \n    vec2 pixelOffset = position.x * eigenVec1 * scale1 + position.y * eigenVec2 * scale2;\n    vec2 ndcOffset = (2.0 / scaledRenderSize) * pixelOffset;\n    vec3 ndc = vec3(ndcCenter.xy + ndcOffset, ndcCenter.z);\n\n    vRgba = rgba;\n    vSplatUv = position.xy * maxStdDev;\n    vNdc = ndc;\n    gl_Position = vec4(ndc.xy * clipCenter.w, clipCenter.zw);\n    #include <logdepthbuf_vertex>\n}";
@@ -5970,7 +5971,8 @@ function getShaders() {
       splatFragment: splatFragment_default,
       computeVec4Template: computeVec4_default,
       computeUvec4Template: computeUvec4_default,
-      videoDecodeUvec4: videoDecodeUvec4_default
+      videoDecodeUvec4: videoDecodeUvec4_default,
+      deltaDecodeFloat: deltaDecodeFloat_default
     };
   }
   return shaders;
@@ -9142,6 +9144,7 @@ const _PackedSplats = class _PackedSplats {
     this.needsUpdate = true;
     this.videoModeData = null;
     this.gpuVideoModeData = null;
+    this.gpuDeltaModeData = null;
     this.extra = {};
     this.dyno = new DynoPackedSplats({ packedSplats: this });
     this.dynoRgbMinMaxLnScaleMinMax = new DynoVec4({
@@ -9992,6 +9995,156 @@ const _PackedSplats = class _PackedSplats {
       this.gpuVideoModeData.sh0CodebookTexture.dispose();
       this.gpuVideoModeData.material.dispose();
       this.gpuVideoModeData = null;
+    }
+  }
+  /**
+   * Initialize GPU delta mode with float position input.
+   * Uses a simpler shader that reads float positions directly.
+   */
+  initDeltaModeGPU(metadata) {
+    const scaleData = new Float32Array(256);
+    let lnScaleMin = Number.POSITIVE_INFINITY;
+    let lnScaleMax = Number.NEGATIVE_INFINITY;
+    for (let i = 0; i < 256; i++) {
+      const val = metadata.scaleCodebook[i] ?? metadata.scaleCodebook[0];
+      scaleData[i] = val;
+      if (val < lnScaleMin) lnScaleMin = val;
+      if (val > lnScaleMax) lnScaleMax = val;
+    }
+    const scaleCodebookTexture = new THREE.DataTexture(
+      scaleData,
+      256,
+      1,
+      THREE.RedFormat,
+      THREE.FloatType
+    );
+    scaleCodebookTexture.minFilter = THREE.NearestFilter;
+    scaleCodebookTexture.magFilter = THREE.NearestFilter;
+    scaleCodebookTexture.needsUpdate = true;
+    const sh0Data = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      sh0Data[i] = metadata.sh0Codebook[i] ?? metadata.sh0Codebook[0];
+    }
+    const sh0CodebookTexture = new THREE.DataTexture(
+      sh0Data,
+      256,
+      1,
+      THREE.RedFormat,
+      THREE.FloatType
+    );
+    sh0CodebookTexture.minFilter = THREE.NearestFilter;
+    sh0CodebookTexture.magFilter = THREE.NearestFilter;
+    sh0CodebookTexture.needsUpdate = true;
+    this.splatEncoding = {
+      rgbMin: 0,
+      rgbMax: 1,
+      lnScaleMin,
+      lnScaleMax
+    };
+    const shaderCode = getShaders().deltaDecodeFloat;
+    const vertexShader = `
+      in vec3 position;
+      void main() {
+        gl_Position = vec4(position, 1.0);
+      }
+    `;
+    const material = new THREE.RawShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader,
+      fragmentShader: shaderCode,
+      uniforms: {
+        targetLayer: { value: 0 },
+        targetBase: { value: 0 },
+        targetCount: { value: 0 },
+        positionTexture: { value: null },
+        positionTextureSize: { value: 0 },
+        attributeTexture: { value: null },
+        attributeTextureSize: { value: 0 },
+        scaleCodebook: { value: scaleCodebookTexture },
+        sh0Codebook: { value: sh0CodebookTexture },
+        splatCount: { value: metadata.maxCount },
+        rgbMinMaxLnScaleMinMax: {
+          value: new THREE.Vector4(0, 1, lnScaleMin, lnScaleMax)
+        },
+        quatTransformMode: { value: 0 },
+        maxScaleFilter: { value: 0 }
+      }
+    });
+    this.gpuDeltaModeData = {
+      maxCount: metadata.maxCount,
+      scaleCodebookTexture,
+      sh0CodebookTexture,
+      material
+    };
+    this.ensureGenerate(metadata.maxCount);
+    console.log(`PackedSplats.initDeltaModeGPU: maxCount=${metadata.maxCount}`);
+  }
+  /**
+   * Update splats from float positions and uint8 attributes.
+   * This bypasses the CPU signed-log encoding entirely.
+   */
+  updateFromDeltaTextureGPU(renderer, positionTexture, attributeTexture, count) {
+    if (!this.gpuDeltaModeData) {
+      throw new Error("Call initDeltaModeGPU() first");
+    }
+    if (!this.target) {
+      throw new Error("Render target not initialized");
+    }
+    const { material } = this.gpuDeltaModeData;
+    const posTexSize = positionTexture.image.width;
+    const attrTexSize = attributeTexture.image.width;
+    material.uniforms.positionTexture.value = positionTexture;
+    material.uniforms.positionTextureSize.value = posTexSize;
+    material.uniforms.attributeTexture.value = attributeTexture;
+    material.uniforms.attributeTextureSize.value = attrTexSize;
+    material.uniforms.splatCount.value = count;
+    const renderState = this.saveRenderState(renderer);
+    const layerSize = SPLAT_TEX_WIDTH * SPLAT_TEX_HEIGHT;
+    const numLayers = Math.ceil(count / layerSize);
+    _PackedSplats.fullScreenQuad.material = material;
+    for (let layer = 0; layer < numLayers; layer++) {
+      const layerBase = layer * layerSize;
+      const layerCount = Math.min(count - layerBase, layerSize);
+      const layerYEnd = Math.ceil(layerCount / SPLAT_TEX_WIDTH);
+      material.uniforms.targetLayer.value = layer;
+      material.uniforms.targetBase.value = layerBase;
+      material.uniforms.targetCount.value = layerCount;
+      this.target.scissor.set(0, 0, SPLAT_TEX_WIDTH, layerYEnd);
+      renderer.setRenderTarget(this.target, layer);
+      renderer.xr.enabled = false;
+      renderer.autoClear = false;
+      const gl = renderer.getContext();
+      gl.clearBufferuiv(gl.COLOR, 0, _PackedSplats.clearValue);
+      _PackedSplats.fullScreenQuad.render(renderer);
+    }
+    this.resetRenderState(renderer, renderState);
+    this.numSplats = count;
+  }
+  /**
+   * Update the quaternion transform mode for delta mode
+   */
+  setDeltaQuatTransformMode(mode) {
+    if (this.gpuDeltaModeData) {
+      this.gpuDeltaModeData.material.uniforms.quatTransformMode.value = mode;
+    }
+  }
+  /**
+   * Update the max scale filter for delta mode
+   */
+  setDeltaMaxScaleFilter(maxScale) {
+    if (this.gpuDeltaModeData) {
+      this.gpuDeltaModeData.material.uniforms.maxScaleFilter.value = maxScale;
+    }
+  }
+  /**
+   * Dispose GPU delta mode resources
+   */
+  disposeDeltaModeGPU() {
+    if (this.gpuDeltaModeData) {
+      this.gpuDeltaModeData.scaleCodebookTexture.dispose();
+      this.gpuDeltaModeData.sh0CodebookTexture.dispose();
+      this.gpuDeltaModeData.material.dispose();
+      this.gpuDeltaModeData = null;
     }
   }
 };
@@ -12341,6 +12494,7 @@ async function transcodeSpz(input) {
   return { fileBytes: spzBytes, clippedCount: spz.clippedCount };
 }
 class DeltaSplatDecoder {
+  // Square texture side length
   constructor(metadata) {
     this.metadata = metadata;
     this.tileSize = metadata.tile_size;
@@ -12380,8 +12534,20 @@ class DeltaSplatDecoder {
     this.sogHeight = sogHeight;
     this.sogTileData = new Uint8Array(sogWidth * sogHeight * 4);
     this.posEncodeBuf = new Uint8Array(6);
+    const gpuTexSide = Math.ceil(Math.sqrt(maxActive));
+    const gpuTexSizePow = Math.ceil(Math.log2(Math.max(gpuTexSide, 1)));
+    this.gpuTextureSize = 2 ** gpuTexSizePow;
+    this.gpuPositionBuffer = new Float32Array(
+      this.gpuTextureSize * this.gpuTextureSize * 4
+    );
+    this.gpuAttributeBuffer = new Uint8Array(
+      this.gpuTextureSize * this.gpuTextureSize * 3 * 4
+    );
     console.log(
-      `DeltaSplatDecoder initialized: maxActive=${maxActive}, deltaTile=${this.tileSize}, sogTile=${this.sogTileSize}`
+      `DeltaSplatDecoder initialized: maxActive=${maxActive}, deltaTile=${this.tileSize}, sogTile=${this.sogTileSize}, gpuTex=${this.gpuTextureSize}`
+    );
+    console.log(
+      `GPU buffers: position=${this.gpuPositionBuffer.length} floats (${this.gpuTextureSize}x${this.gpuTextureSize}), attributes=${this.gpuAttributeBuffer.length} bytes (${this.gpuTextureSize}x${this.gpuTextureSize * 3})`
     );
   }
   async loadDeltaFrames(webpBlob) {
@@ -12396,7 +12562,7 @@ class DeltaSplatDecoder {
     for (let i = 0; i < frameCount; i++) {
       const result = await decoder.decode({ frameIndex: i });
       const frame = result.image;
-      const format = frame.format;
+      const format = frame.format ?? "unknown";
       if (i === 0) {
         console.log(`VideoFrame format: ${format}`);
       }
@@ -12472,6 +12638,74 @@ class DeltaSplatDecoder {
     this._assembleSogTexture();
     return { data: this.sogTileData, count: this.activeCount };
   }
+  /**
+   * GPU-optimized frame processing: returns float positions and uint8 attributes.
+   * Skips CPU-side signed-log encoding - positions uploaded as floats directly.
+   */
+  processFrameGPU(frameIndex) {
+    if (frameIndex === 0 && this.currentFrameIndex !== 0) {
+      this.reset();
+    }
+    while (this.currentFrameIndex <= frameIndex) {
+      this._processOneFrame(this.currentFrameIndex);
+      this.currentFrameIndex++;
+    }
+    this._fillGPUBuffers();
+    return {
+      positions: this.gpuPositionBuffer,
+      attributes: this.gpuAttributeBuffer,
+      count: this.activeCount,
+      textureSize: this.gpuTextureSize
+    };
+  }
+  /**
+   * Fill GPU output buffers with float positions and uint8 attributes.
+   * Much faster than _assembleSogTexture() - no position encoding.
+   */
+  _fillGPUBuffers() {
+    const texSize = this.gpuTextureSize;
+    const planeSize = texSize * texSize * 4;
+    this.gpuPositionBuffer.fill(0);
+    this.gpuAttributeBuffer.fill(0);
+    for (let idx = 0; idx < this.activeIndices.length; idx++) {
+      const g = this.activeGaussians[this.activeIndices[idx]];
+      if (!g) continue;
+      const row = Math.floor(idx / texSize);
+      const col = idx % texSize;
+      const posBase = (row * texSize + col) * 4;
+      this.gpuPositionBuffer[posBase] = g.position[0];
+      this.gpuPositionBuffer[posBase + 1] = g.position[1];
+      this.gpuPositionBuffer[posBase + 2] = g.position[2];
+      this.gpuPositionBuffer[posBase + 3] = 1;
+      const pixelOffset = (row * texSize + col) * 4;
+      const quatsBase = pixelOffset;
+      this.gpuAttributeBuffer[quatsBase] = g.quatsEncoded[0];
+      this.gpuAttributeBuffer[quatsBase + 1] = g.quatsEncoded[1];
+      this.gpuAttributeBuffer[quatsBase + 2] = g.quatsEncoded[2];
+      this.gpuAttributeBuffer[quatsBase + 3] = g.quatsEncoded[3];
+      const scalesBase = planeSize + pixelOffset;
+      this.gpuAttributeBuffer[scalesBase] = g.scalesEncoded[0];
+      this.gpuAttributeBuffer[scalesBase + 1] = g.scalesEncoded[1];
+      this.gpuAttributeBuffer[scalesBase + 2] = g.scalesEncoded[2];
+      this.gpuAttributeBuffer[scalesBase + 3] = g.scalesEncoded[3];
+      const sh0Base = planeSize * 2 + pixelOffset;
+      this.gpuAttributeBuffer[sh0Base] = g.sh0Encoded[0];
+      this.gpuAttributeBuffer[sh0Base + 1] = g.sh0Encoded[1];
+      this.gpuAttributeBuffer[sh0Base + 2] = g.sh0Encoded[2];
+      this.gpuAttributeBuffer[sh0Base + 3] = g.sh0Encoded[3];
+    }
+  }
+  /**
+   * Get GPU texture dimensions for creating THREE.DataTexture
+   */
+  getGPUTextureDimensions() {
+    return {
+      positionSize: this.gpuTextureSize,
+      attributeWidth: this.gpuTextureSize,
+      attributeHeight: this.gpuTextureSize * 3
+      // 3 planes: quats, scales, sh0
+    };
+  }
   reset() {
     this.activeGaussians.fill(null);
     this.activeIndices = [];
@@ -12499,6 +12733,7 @@ class DeltaSplatDecoder {
     for (let readIdx = 0; readIdx < this.activeIndices.length; readIdx++) {
       const slot = this.activeIndices[readIdx];
       const g = this.activeGaussians[slot];
+      if (!g) continue;
       if (g.justBorn) {
         g.justBorn = false;
       } else {
@@ -12636,6 +12871,7 @@ class DeltaSplatDecoder {
     }
     for (let idx = 0; idx < this.activeIndices.length; idx++) {
       const g = this.activeGaussians[this.activeIndices[idx]];
+      if (!g) continue;
       const row = Math.floor(idx / ts);
       const col = idx % ts;
       this._encodePositionInPlace(g.position, this.posEncodeBuf);
@@ -12685,8 +12921,8 @@ const _DeltaSplatMesh = class _DeltaSplatMesh extends SplatMesh {
   constructor(options = {}) {
     super(options);
     this.decoder = null;
-    this.frameTexture = null;
-    this.tileUVs = null;
+    this.positionTexture = null;
+    this.attributeTexture = null;
     this.metadata = null;
     this.currentFrameIndex = 0;
     this.isPlaying = false;
@@ -12709,60 +12945,41 @@ const _DeltaSplatMesh = class _DeltaSplatMesh extends SplatMesh {
     this.metadata = metadata;
     this.decoder = new DeltaSplatDecoder(metadata);
     await this.decoder.loadDeltaFrames(webpBlob);
-    const { width: sogWidth, height: sogHeight } = this.decoder.getSOGDimensions();
-    const sogTileSize = sogWidth / 3;
-    const sparkMetadata = {
-      count: metadata["4dgs"].max_active_gaussians,
-      mins: metadata.sog.means.mins,
-      maxs: metadata.sog.means.maxs,
+    const deltaMetadata = {
+      maxCount: metadata["4dgs"].max_active_gaussians,
       scaleCodebook: metadata.sog.scales.codebook,
       sh0Codebook: metadata.sog.sh0.codebook
     };
-    this.packedSplats.initVideoModeGPU(sparkMetadata, sogTileSize);
-    this.tileUVs = {
-      means_l: {
-        u0: 0,
-        v0: 0,
-        u1: sogTileSize / sogWidth,
-        v1: sogTileSize / sogHeight
-      },
-      means_u: {
-        u0: sogTileSize / sogWidth,
-        v0: 0,
-        u1: 2 * sogTileSize / sogWidth,
-        v1: sogTileSize / sogHeight
-      },
-      quats: {
-        u0: 2 * sogTileSize / sogWidth,
-        v0: 0,
-        u1: 1,
-        v1: sogTileSize / sogHeight
-      },
-      scales: {
-        u0: 0,
-        v0: sogTileSize / sogHeight,
-        u1: sogTileSize / sogWidth,
-        v1: 1
-      },
-      sh0: {
-        u0: sogTileSize / sogWidth,
-        v0: sogTileSize / sogHeight,
-        u1: 2 * sogTileSize / sogWidth,
-        v1: 1
-      }
-    };
-    const texData = new Uint8Array(sogWidth * sogHeight * 4);
-    this.frameTexture = new THREE.DataTexture(texData, sogWidth, sogHeight);
-    this.frameTexture.format = THREE.RGBAFormat;
-    this.frameTexture.type = THREE.UnsignedByteType;
-    this.frameTexture.minFilter = THREE.NearestFilter;
-    this.frameTexture.magFilter = THREE.NearestFilter;
-    this.frameTexture.generateMipmaps = false;
-    this.frameTexture.colorSpace = THREE.NoColorSpace;
+    this.packedSplats.initDeltaModeGPU(deltaMetadata);
+    const { positionSize, attributeWidth, attributeHeight } = this.decoder.getGPUTextureDimensions();
+    const posData = new Float32Array(positionSize * positionSize * 4);
+    this.positionTexture = new THREE.DataTexture(
+      posData,
+      positionSize,
+      positionSize,
+      THREE.RGBAFormat,
+      THREE.FloatType
+    );
+    this.positionTexture.minFilter = THREE.NearestFilter;
+    this.positionTexture.magFilter = THREE.NearestFilter;
+    this.positionTexture.generateMipmaps = false;
+    this.positionTexture.colorSpace = THREE.NoColorSpace;
+    const attrData = new Uint8Array(attributeWidth * attributeHeight * 4);
+    this.attributeTexture = new THREE.DataTexture(
+      attrData,
+      attributeWidth,
+      attributeHeight,
+      THREE.RGBAFormat,
+      THREE.UnsignedByteType
+    );
+    this.attributeTexture.minFilter = THREE.NearestFilter;
+    this.attributeTexture.magFilter = THREE.NearestFilter;
+    this.attributeTexture.generateMipmaps = false;
+    this.attributeTexture.colorSpace = THREE.NoColorSpace;
     this.frameInterval = 1e3 / metadata.video.fps;
     const loadTime = performance.now() - loadStart;
     console.log(
-      `DeltaSplatMesh loaded: ${this.decoder.getTotalFrames()} frames @ ${metadata.video.fps}fps`
+      `DeltaSplatMesh loaded: ${this.decoder.getTotalFrames()} frames @ ${metadata.video.fps}fps (GPU float mode)`
     );
     return { loadTime };
   }
@@ -12773,8 +12990,8 @@ const _DeltaSplatMesh = class _DeltaSplatMesh extends SplatMesh {
     if (!this.decoder) return;
     this.decoder.reset();
     this.currentFrameIndex = 0;
-    const { data, count } = this.decoder.processFrame(0);
-    this._uploadFrame(renderer, data, count);
+    const { positions, attributes, count } = this.decoder.processFrameGPU(0);
+    this._uploadFrameGPU(renderer, positions, attributes, count);
   }
   /**
    * Seek to a specific frame.
@@ -12786,40 +13003,43 @@ const _DeltaSplatMesh = class _DeltaSplatMesh extends SplatMesh {
     if (frame < this.decoder.currentFrameIndex) {
       this.decoder.reset();
     }
-    const { data, count } = this.decoder.processFrame(frame);
+    const { positions, attributes, count } = this.decoder.processFrameGPU(frame);
     this.currentFrameIndex = frame;
-    this._uploadFrame(renderer, data, count);
+    this._uploadFrameGPU(renderer, positions, attributes, count);
   }
   /**
    * Call each frame from the render loop.
    * Returns true if a new frame was decoded.
    */
   tick(renderer, now = performance.now()) {
-    if (!this.isPlaying || !this.decoder || !this.frameTexture || !this.tileUVs) {
+    if (!this.isPlaying || !this.decoder || !this.positionTexture || !this.attributeTexture) {
       return false;
     }
     if (this.lastFrameTime === 0) this.lastFrameTime = now;
     if (now - this.lastFrameTime < this.frameInterval) return false;
     this.lastFrameTime = now;
     this.currentFrameIndex = (this.currentFrameIndex + 1) % this.decoder.getTotalFrames();
-    const { data, count } = this.decoder.processFrame(this.currentFrameIndex);
-    this._uploadFrame(renderer, data, count);
+    const { positions, attributes, count } = this.decoder.processFrameGPU(
+      this.currentFrameIndex
+    );
+    this._uploadFrameGPU(renderer, positions, attributes, count);
     return true;
   }
-  _uploadFrame(renderer, data, count) {
+  _uploadFrameGPU(renderer, positions, attributes, count) {
     var _a2;
-    if (!this.frameTexture || !this.tileUVs) return;
-    const imageData = this.frameTexture.image;
-    imageData.data.set(data);
-    this.frameTexture.needsUpdate = true;
-    this.packedSplats.updateVideoSplatCount(count);
+    if (!this.positionTexture || !this.attributeTexture) return;
+    const posImageData = this.positionTexture.image;
+    posImageData.data.set(positions);
+    this.positionTexture.needsUpdate = true;
+    const attrImageData = this.attributeTexture.image;
+    attrImageData.data.set(attributes);
+    this.attributeTexture.needsUpdate = true;
     this.numSplats = count;
-    this.packedSplats.updateFromVideoTextureGPU(
+    this.packedSplats.updateFromDeltaTextureGPU(
       renderer,
-      this.frameTexture,
-      this.tileUVs,
-      imageData.width,
-      imageData.height
+      this.positionTexture,
+      this.attributeTexture,
+      count
     );
     this.updateVersion();
     (_a2 = this.onFrameChange) == null ? void 0 : _a2.call(this, this.currentFrameIndex, this.getTotalFrames());
@@ -12889,10 +13109,15 @@ const _DeltaSplatMesh = class _DeltaSplatMesh extends SplatMesh {
     return [0, 1];
   }
   dispose() {
-    if (this.frameTexture) {
-      this.frameTexture.dispose();
-      this.frameTexture = null;
+    if (this.positionTexture) {
+      this.positionTexture.dispose();
+      this.positionTexture = null;
     }
+    if (this.attributeTexture) {
+      this.attributeTexture.dispose();
+      this.attributeTexture = null;
+    }
+    this.packedSplats.disposeDeltaModeGPU();
     super.dispose();
   }
   static getQuatTransformName(mode) {

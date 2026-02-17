@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { type Delta4DGSMetadata, DeltaSplatDecoder } from "./DeltaSplatDecoder";
-import type { GPUVideoTileUVs, SOGVideoMetadata } from "./PackedSplats";
+import type { DeltaModeMetadata } from "./PackedSplats";
 import { SparkRenderer } from "./SparkRenderer";
 import { SplatMesh, type SplatMeshOptions } from "./SplatMesh";
 
@@ -58,8 +58,8 @@ export class DeltaSplatMesh extends SplatMesh {
     "cycleYZWX",
   ];
   private decoder: DeltaSplatDecoder | null = null;
-  private frameTexture: THREE.DataTexture | null = null;
-  private tileUVs: GPUVideoTileUVs | null = null;
+  private positionTexture: THREE.DataTexture | null = null;
+  private attributeTexture: THREE.DataTexture | null = null;
   private metadata: Delta4DGSMetadata | null = null;
 
   currentFrameIndex = 0;
@@ -97,71 +97,54 @@ export class DeltaSplatMesh extends SplatMesh {
     this.decoder = new DeltaSplatDecoder(metadata);
     await this.decoder.loadDeltaFrames(webpBlob);
 
-    const { width: sogWidth, height: sogHeight } =
-      this.decoder.getSOGDimensions();
-    // SOG tile size derived from dimensions (3x2 grid)
-    const sogTileSize = sogWidth / 3;
-
-    // Initialize GPU video mode on PackedSplats
-    const sparkMetadata: SOGVideoMetadata = {
-      count: metadata["4dgs"].max_active_gaussians,
-      mins: metadata.sog.means.mins,
-      maxs: metadata.sog.means.maxs,
+    // Initialize GPU delta mode on PackedSplats (float positions, no CPU encoding)
+    const deltaMetadata: DeltaModeMetadata = {
+      maxCount: metadata["4dgs"].max_active_gaussians,
       scaleCodebook: metadata.sog.scales.codebook,
       sh0Codebook: metadata.sog.sh0.codebook,
     };
-    this.packedSplats.initVideoModeGPU(sparkMetadata, sogTileSize);
+    this.packedSplats.initDeltaModeGPU(deltaMetadata);
 
-    // Calculate 3x2 tile UVs for reconstructed SOG
-    this.tileUVs = {
-      means_l: {
-        u0: 0,
-        v0: 0,
-        u1: sogTileSize / sogWidth,
-        v1: sogTileSize / sogHeight,
-      },
-      means_u: {
-        u0: sogTileSize / sogWidth,
-        v0: 0,
-        u1: (2 * sogTileSize) / sogWidth,
-        v1: sogTileSize / sogHeight,
-      },
-      quats: {
-        u0: (2 * sogTileSize) / sogWidth,
-        v0: 0,
-        u1: 1,
-        v1: sogTileSize / sogHeight,
-      },
-      scales: {
-        u0: 0,
-        v0: sogTileSize / sogHeight,
-        u1: sogTileSize / sogWidth,
-        v1: 1,
-      },
-      sh0: {
-        u0: sogTileSize / sogWidth,
-        v0: sogTileSize / sogHeight,
-        u1: (2 * sogTileSize) / sogWidth,
-        v1: 1,
-      },
-    };
+    // Create GPU textures for position and attributes
+    const { positionSize, attributeWidth, attributeHeight } =
+      this.decoder.getGPUTextureDimensions();
 
-    // Create reusable DataTexture
-    const texData = new Uint8Array(sogWidth * sogHeight * 4);
-    this.frameTexture = new THREE.DataTexture(texData, sogWidth, sogHeight);
-    this.frameTexture.format = THREE.RGBAFormat;
-    this.frameTexture.type = THREE.UnsignedByteType;
-    this.frameTexture.minFilter = THREE.NearestFilter;
-    this.frameTexture.magFilter = THREE.NearestFilter;
-    this.frameTexture.generateMipmaps = false;
-    this.frameTexture.colorSpace = THREE.NoColorSpace;
+    // Position texture: RGBA32F (4 floats per texel, alpha unused)
+    const posData = new Float32Array(positionSize * positionSize * 4);
+    this.positionTexture = new THREE.DataTexture(
+      posData,
+      positionSize,
+      positionSize,
+      THREE.RGBAFormat,
+      THREE.FloatType,
+    );
+    this.positionTexture.minFilter = THREE.NearestFilter;
+    this.positionTexture.magFilter = THREE.NearestFilter;
+    this.positionTexture.generateMipmaps = false;
+    this.positionTexture.colorSpace = THREE.NoColorSpace;
+
+    // Attribute texture: RGBA8, 3 planes stacked vertically (quats, scales, sh0)
+    // Each plane is positionSize x positionSize
+    // CRITICAL: NoColorSpace prevents sRGB conversion which would corrupt codebook indices
+    const attrData = new Uint8Array(attributeWidth * attributeHeight * 4);
+    this.attributeTexture = new THREE.DataTexture(
+      attrData,
+      attributeWidth,
+      attributeHeight,
+      THREE.RGBAFormat,
+      THREE.UnsignedByteType,
+    );
+    this.attributeTexture.minFilter = THREE.NearestFilter;
+    this.attributeTexture.magFilter = THREE.NearestFilter;
+    this.attributeTexture.generateMipmaps = false;
+    this.attributeTexture.colorSpace = THREE.NoColorSpace;
 
     this.frameInterval = 1000 / metadata.video.fps;
 
     const loadTime = performance.now() - loadStart;
 
     console.log(
-      `DeltaSplatMesh loaded: ${this.decoder.getTotalFrames()} frames @ ${metadata.video.fps}fps`,
+      `DeltaSplatMesh loaded: ${this.decoder.getTotalFrames()} frames @ ${metadata.video.fps}fps (GPU float mode)`,
     );
 
     return { loadTime };
@@ -175,9 +158,9 @@ export class DeltaSplatMesh extends SplatMesh {
 
     this.decoder.reset();
     this.currentFrameIndex = 0;
-    const { data, count } = this.decoder.processFrame(0);
+    const { positions, attributes, count } = this.decoder.processFrameGPU(0);
 
-    this._uploadFrame(renderer, data, count);
+    this._uploadFrameGPU(renderer, positions, attributes, count);
   }
 
   /**
@@ -194,10 +177,11 @@ export class DeltaSplatMesh extends SplatMesh {
       this.decoder.reset();
     }
 
-    const { data, count } = this.decoder.processFrame(frame);
+    const { positions, attributes, count } =
+      this.decoder.processFrameGPU(frame);
     this.currentFrameIndex = frame;
 
-    this._uploadFrame(renderer, data, count);
+    this._uploadFrameGPU(renderer, positions, attributes, count);
   }
 
   /**
@@ -211,8 +195,8 @@ export class DeltaSplatMesh extends SplatMesh {
     if (
       !this.isPlaying ||
       !this.decoder ||
-      !this.frameTexture ||
-      !this.tileUVs
+      !this.positionTexture ||
+      !this.attributeTexture
     ) {
       return false;
     }
@@ -226,40 +210,50 @@ export class DeltaSplatMesh extends SplatMesh {
     this.currentFrameIndex =
       (this.currentFrameIndex + 1) % this.decoder.getTotalFrames();
 
-    // Process delta frame
-    const { data, count } = this.decoder.processFrame(this.currentFrameIndex);
+    // Process delta frame (GPU mode - no CPU encoding)
+    const { positions, attributes, count } = this.decoder.processFrameGPU(
+      this.currentFrameIndex,
+    );
 
-    this._uploadFrame(renderer, data, count);
+    this._uploadFrameGPU(renderer, positions, attributes, count);
 
     return true;
   }
 
-  private _uploadFrame(
+  private _uploadFrameGPU(
     renderer: THREE.WebGLRenderer,
-    data: Uint8Array,
+    positions: Float32Array,
+    attributes: Uint8Array,
     count: number,
   ): void {
-    if (!this.frameTexture || !this.tileUVs) return;
+    if (!this.positionTexture || !this.attributeTexture) return;
 
-    // Update texture data
-    const imageData = this.frameTexture.image as {
+    // Update position texture data
+    const posImageData = this.positionTexture.image as {
+      data: Float32Array;
+      width: number;
+      height: number;
+    };
+    posImageData.data.set(positions);
+    this.positionTexture.needsUpdate = true;
+
+    // Update attribute texture data
+    const attrImageData = this.attributeTexture.image as {
       data: Uint8Array;
       width: number;
       height: number;
     };
-    imageData.data.set(data);
-    this.frameTexture.needsUpdate = true;
+    attrImageData.data.set(attributes);
+    this.attributeTexture.needsUpdate = true;
 
-    // GPU decode
-    this.packedSplats.updateVideoSplatCount(count);
+    // GPU decode (float positions, no signed-log encoding)
     this.numSplats = count;
 
-    this.packedSplats.updateFromVideoTextureGPU(
+    this.packedSplats.updateFromDeltaTextureGPU(
       renderer,
-      this.frameTexture,
-      this.tileUVs,
-      imageData.width,
-      imageData.height,
+      this.positionTexture,
+      this.attributeTexture,
+      count,
     );
 
     this.updateVersion();
@@ -353,10 +347,15 @@ export class DeltaSplatMesh extends SplatMesh {
   }
 
   dispose(): void {
-    if (this.frameTexture) {
-      this.frameTexture.dispose();
-      this.frameTexture = null;
+    if (this.positionTexture) {
+      this.positionTexture.dispose();
+      this.positionTexture = null;
     }
+    if (this.attributeTexture) {
+      this.attributeTexture.dispose();
+      this.attributeTexture = null;
+    }
+    this.packedSplats.disposeDeltaModeGPU();
     super.dispose();
   }
 

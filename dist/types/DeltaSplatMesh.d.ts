@@ -21,8 +21,8 @@ import * as THREE from "three";
 export declare class DeltaSplatMesh extends SplatMesh {
     static readonly QUAT_TRANSFORM_NAMES: string[];
     private decoder;
-    private frameTexture;
-    private tileUVs;
+    private positionTexture;
+    private attributeTexture;
     private metadata;
     currentFrameIndex: number;
     isPlaying: boolean;
@@ -55,7 +55,7 @@ export declare class DeltaSplatMesh extends SplatMesh {
      * Returns true if a new frame was decoded.
      */
     tick(renderer: THREE.WebGLRenderer, now?: number): boolean;
-    private _uploadFrame;
+    private _uploadFrameGPU;
     play(): void;
     pause(): void;
     toggle(): void;

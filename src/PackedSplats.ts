@@ -1208,6 +1208,196 @@ export class PackedSplats {
       this.gpuVideoModeData = null;
     }
   }
+
+  // =============================================
+  // GPU Delta Mode API
+  // Float positions uploaded directly - no signed-log encoding on CPU
+  // =============================================
+
+  private gpuDeltaModeData: GPUDeltaModeData | null = null;
+
+  /**
+   * Initialize GPU delta mode with float position input.
+   * Uses a simpler shader that reads float positions directly.
+   */
+  initDeltaModeGPU(metadata: DeltaModeMetadata) {
+    // Create scale codebook texture (256x1, R32F format)
+    const scaleData = new Float32Array(256);
+    let lnScaleMin = Number.POSITIVE_INFINITY;
+    let lnScaleMax = Number.NEGATIVE_INFINITY;
+    for (let i = 0; i < 256; i++) {
+      const val = metadata.scaleCodebook[i] ?? metadata.scaleCodebook[0];
+      scaleData[i] = val;
+      if (val < lnScaleMin) lnScaleMin = val;
+      if (val > lnScaleMax) lnScaleMax = val;
+    }
+    const scaleCodebookTexture = new THREE.DataTexture(
+      scaleData,
+      256,
+      1,
+      THREE.RedFormat,
+      THREE.FloatType,
+    );
+    scaleCodebookTexture.minFilter = THREE.NearestFilter;
+    scaleCodebookTexture.magFilter = THREE.NearestFilter;
+    scaleCodebookTexture.needsUpdate = true;
+
+    // Create SH0/color codebook texture (256x1, R32F format)
+    const sh0Data = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      sh0Data[i] = metadata.sh0Codebook[i] ?? metadata.sh0Codebook[0];
+    }
+    const sh0CodebookTexture = new THREE.DataTexture(
+      sh0Data,
+      256,
+      1,
+      THREE.RedFormat,
+      THREE.FloatType,
+    );
+    sh0CodebookTexture.minFilter = THREE.NearestFilter;
+    sh0CodebookTexture.magFilter = THREE.NearestFilter;
+    sh0CodebookTexture.needsUpdate = true;
+
+    // Set splatEncoding with the actual scale range
+    this.splatEncoding = {
+      rgbMin: 0,
+      rgbMax: 1,
+      lnScaleMin,
+      lnScaleMax,
+    };
+
+    // Create decode shader material
+    const shaderCode = getShaders().deltaDecodeFloat;
+    const vertexShader = `
+      in vec3 position;
+      void main() {
+        gl_Position = vec4(position, 1.0);
+      }
+    `;
+
+    const material = new THREE.RawShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      vertexShader,
+      fragmentShader: shaderCode,
+      uniforms: {
+        targetLayer: { value: 0 },
+        targetBase: { value: 0 },
+        targetCount: { value: 0 },
+        positionTexture: { value: null },
+        positionTextureSize: { value: 0 },
+        attributeTexture: { value: null },
+        attributeTextureSize: { value: 0 },
+        scaleCodebook: { value: scaleCodebookTexture },
+        sh0Codebook: { value: sh0CodebookTexture },
+        splatCount: { value: metadata.maxCount },
+        rgbMinMaxLnScaleMinMax: {
+          value: new THREE.Vector4(0, 1, lnScaleMin, lnScaleMax),
+        },
+        quatTransformMode: { value: 0 },
+        maxScaleFilter: { value: 0.0 },
+      },
+    });
+
+    this.gpuDeltaModeData = {
+      maxCount: metadata.maxCount,
+      scaleCodebookTexture,
+      sh0CodebookTexture,
+      material,
+    };
+
+    // Initialize render target if needed
+    this.ensureGenerate(metadata.maxCount);
+
+    console.log(`PackedSplats.initDeltaModeGPU: maxCount=${metadata.maxCount}`);
+  }
+
+  /**
+   * Update splats from float positions and uint8 attributes.
+   * This bypasses the CPU signed-log encoding entirely.
+   */
+  updateFromDeltaTextureGPU(
+    renderer: THREE.WebGLRenderer,
+    positionTexture: THREE.DataTexture,
+    attributeTexture: THREE.DataTexture,
+    count: number,
+  ) {
+    if (!this.gpuDeltaModeData) {
+      throw new Error("Call initDeltaModeGPU() first");
+    }
+    if (!this.target) {
+      throw new Error("Render target not initialized");
+    }
+
+    const { material } = this.gpuDeltaModeData;
+    const posTexSize = positionTexture.image.width;
+    const attrTexSize = attributeTexture.image.width;
+
+    // Update uniforms
+    material.uniforms.positionTexture.value = positionTexture;
+    material.uniforms.positionTextureSize.value = posTexSize;
+    material.uniforms.attributeTexture.value = attributeTexture;
+    material.uniforms.attributeTextureSize.value = attrTexSize;
+    material.uniforms.splatCount.value = count;
+
+    // Render to packed splat texture
+    const renderState = this.saveRenderState(renderer);
+
+    const layerSize = SPLAT_TEX_WIDTH * SPLAT_TEX_HEIGHT;
+    const numLayers = Math.ceil(count / layerSize);
+
+    PackedSplats.fullScreenQuad.material = material;
+
+    for (let layer = 0; layer < numLayers; layer++) {
+      const layerBase = layer * layerSize;
+      const layerCount = Math.min(count - layerBase, layerSize);
+      const layerYEnd = Math.ceil(layerCount / SPLAT_TEX_WIDTH);
+
+      material.uniforms.targetLayer.value = layer;
+      material.uniforms.targetBase.value = layerBase;
+      material.uniforms.targetCount.value = layerCount;
+
+      this.target.scissor.set(0, 0, SPLAT_TEX_WIDTH, layerYEnd);
+      renderer.setRenderTarget(this.target, layer);
+      renderer.xr.enabled = false;
+      renderer.autoClear = false;
+      const gl = renderer.getContext() as WebGL2RenderingContext;
+      gl.clearBufferuiv(gl.COLOR, 0, PackedSplats.clearValue);
+      PackedSplats.fullScreenQuad.render(renderer);
+    }
+
+    this.resetRenderState(renderer, renderState);
+    this.numSplats = count;
+  }
+
+  /**
+   * Update the quaternion transform mode for delta mode
+   */
+  setDeltaQuatTransformMode(mode: number) {
+    if (this.gpuDeltaModeData) {
+      this.gpuDeltaModeData.material.uniforms.quatTransformMode.value = mode;
+    }
+  }
+
+  /**
+   * Update the max scale filter for delta mode
+   */
+  setDeltaMaxScaleFilter(maxScale: number) {
+    if (this.gpuDeltaModeData) {
+      this.gpuDeltaModeData.material.uniforms.maxScaleFilter.value = maxScale;
+    }
+  }
+
+  /**
+   * Dispose GPU delta mode resources
+   */
+  disposeDeltaModeGPU() {
+    if (this.gpuDeltaModeData) {
+      this.gpuDeltaModeData.scaleCodebookTexture.dispose();
+      this.gpuDeltaModeData.sh0CodebookTexture.dispose();
+      this.gpuDeltaModeData.material.dispose();
+      this.gpuDeltaModeData = null;
+    }
+  }
 }
 
 // =============================================
@@ -1284,6 +1474,29 @@ export type GPUVideoTileUVs = {
   scales: GPUVideoTileUV;
   sh0: GPUVideoTileUV;
   t_scale?: GPUVideoTileUV; // Optional: t_scale tile for static/dynamic classification
+};
+
+// =============================================
+// Delta Mode Types
+// =============================================
+
+/**
+ * Metadata for initializing delta mode (float positions)
+ */
+export type DeltaModeMetadata = {
+  maxCount: number;
+  scaleCodebook: number[];
+  sh0Codebook: number[];
+};
+
+/**
+ * GPU delta mode data - shader materials and codebook textures
+ */
+type GPUDeltaModeData = {
+  maxCount: number;
+  scaleCodebookTexture: THREE.DataTexture;
+  sh0CodebookTexture: THREE.DataTexture;
+  material: THREE.RawShaderMaterial;
 };
 
 // =============================================
