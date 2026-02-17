@@ -38,7 +38,8 @@ export {
   type SplatMeshOptions,
   type SplatMeshContext,
 } from "./SplatMesh";
-export { VideoSplatMesh, type Video4DGSMetadata } from "./VideoSplatMesh";
+export { DeltaSplatDecoder, type Delta4DGSMetadata } from "./DeltaSplatDecoder";
+export { DeltaSplatMesh } from "./DeltaSplatMesh";
 export { SplatSkinning, type SplatSkinningOptions } from "./SplatSkinning";
 export {
   SplatEdit,

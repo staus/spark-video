@@ -12402,130 +12402,276 @@ async function transcodeSpz(input) {
   const spzBytes = await spz.finalize();
   return { fileBytes: spzBytes, clippedCount: spz.clippedCount };
 }
-const _VideoSplatMesh = class _VideoSplatMesh extends SplatMesh {
+class DeltaSplatDecoder {
+  constructor(metadata) {
+    this.metadata = metadata;
+    this.tileSize = metadata.tile_size;
+    this.posMins = new Float32Array(metadata.sog.means.mins);
+    this.posMaxs = new Float32Array(metadata.sog.means.maxs);
+    this.posRange = new Float32Array([
+      this.posMaxs[0] - this.posMins[0],
+      this.posMaxs[1] - this.posMins[1],
+      this.posMaxs[2] - this.posMins[2]
+    ]);
+    this.motionMins = new Float32Array(metadata.sog.motion.mins);
+    this.motionMaxs = new Float32Array(metadata.sog.motion.maxs);
+    this.motionRange = new Float32Array([
+      this.motionMaxs[0] - this.motionMins[0],
+      this.motionMaxs[1] - this.motionMins[1],
+      this.motionMaxs[2] - this.motionMins[2]
+    ]);
+    const maxActive = metadata["4dgs"].max_active_gaussians;
+    this.maxActive = maxActive;
+    this.activeGaussians = new Array(maxActive).fill(null);
+    this.freeSlots = [];
+    for (let i = maxActive - 1; i >= 0; i--) {
+      this.freeSlots.push(i);
+    }
+    this.activeCount = 0;
+    this.currentFrameIndex = 0;
+    this.deltaFrames = [];
+    this.deltaCanvas = new OffscreenCanvas(
+      this.tileSize * metadata.grid[0],
+      this.tileSize * metadata.grid[1]
+    );
+    const ctx = this.deltaCanvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) {
+      throw new Error("Failed to get 2D context for delta canvas");
+    }
+    this.deltaCtx = ctx;
+    const sogWidth = this.tileSize * 3;
+    const sogHeight = this.tileSize * 2;
+    this.sogWidth = sogWidth;
+    this.sogHeight = sogHeight;
+    this.sogTileData = new Uint8Array(sogWidth * sogHeight * 4);
+    console.log(
+      `DeltaSplatDecoder initialized: maxActive=${maxActive}, tileSize=${this.tileSize}`
+    );
+  }
+  async loadDeltaFrames(webpBlob) {
+    var _a2;
+    const arrayBuffer = await webpBlob.arrayBuffer();
+    const decoder = new ImageDecoder({ data: arrayBuffer, type: "image/webp" });
+    await decoder.tracks.ready;
+    const frameCount = ((_a2 = decoder.tracks.selectedTrack) == null ? void 0 : _a2.frameCount) || this.metadata.video.frames;
+    this.deltaFrames = [];
+    console.log(`Decoding ${frameCount} delta frames...`);
+    for (let i = 0; i < frameCount; i++) {
+      const result = await decoder.decode({ frameIndex: i });
+      const bitmap = await createImageBitmap(result.image, {
+        premultiplyAlpha: "none",
+        colorSpaceConversion: "none"
+      });
+      this.deltaFrames.push(bitmap);
+      result.image.close();
+    }
+    decoder.close();
+    console.log(`Decoded ${this.deltaFrames.length} delta frames`);
+  }
+  /**
+   * Process a single frame: decode births, update positions, assemble SOG texture.
+   * Returns { data: Uint8Array, count: number }
+   */
+  processFrame(frameIndex) {
+    if (frameIndex === 0 && this.currentFrameIndex !== 0) {
+      this.reset();
+    }
+    while (this.currentFrameIndex <= frameIndex) {
+      this._processOneFrame(this.currentFrameIndex);
+      this.currentFrameIndex++;
+    }
+    this._assembleSogTexture();
+    return { data: this.sogTileData, count: this.activeCount };
+  }
+  reset() {
+    this.activeGaussians.fill(null);
+    this.freeSlots = [];
+    for (let i = this.maxActive - 1; i >= 0; i--) {
+      this.freeSlots.push(i);
+    }
+    this.activeCount = 0;
+    this.currentFrameIndex = 0;
+  }
+  _processOneFrame(frameIndex) {
+    const births = this._decodeBirths(frameIndex);
+    for (const birth of births) {
+      if (this.freeSlots.length === 0) {
+        console.warn(`No free slots for birth at frame ${frameIndex}`);
+        break;
+      }
+      const slot = this.freeSlots.pop();
+      if (slot === void 0) break;
+      this.activeGaussians[slot] = birth;
+      this.activeCount++;
+    }
+    for (let i = 0; i < this.activeGaussians.length; i++) {
+      const g = this.activeGaussians[i];
+      if (!g) continue;
+      if (g.justBorn) {
+        g.justBorn = false;
+      } else {
+        g.position[0] += g.motion[0];
+        g.position[1] += g.motion[1];
+        g.position[2] += g.motion[2];
+      }
+      g.remainingFrames--;
+      if (g.remainingFrames <= 0) {
+        this.activeGaussians[i] = null;
+        this.freeSlots.push(i);
+        this.activeCount--;
+      }
+    }
+  }
+  _decodeBirths(frameIndex) {
+    const birthCount = this.metadata["4dgs"].birth_counts[frameIndex];
+    if (birthCount === 0) return [];
+    const frame = this.deltaFrames[frameIndex];
+    this.deltaCtx.drawImage(frame, 0, 0);
+    const births = [];
+    const layout = this.metadata.layout;
+    const ts = this.tileSize;
+    const readTile = (col, row) => {
+      const x = col * ts;
+      const y = row * ts;
+      return this.deltaCtx.getImageData(x, y, ts, ts).data;
+    };
+    const meansL = readTile(layout.means_l[0], layout.means_l[1]);
+    const meansU = readTile(layout.means_u[0], layout.means_u[1]);
+    const quats = readTile(layout.quats[0], layout.quats[1]);
+    const motionL = readTile(layout.motion_l[0], layout.motion_l[1]);
+    const scales = readTile(layout.scales[0], layout.scales[1]);
+    const sh0 = readTile(layout.sh0[0], layout.sh0[1]);
+    const motionU = readTile(layout.motion_u[0], layout.motion_u[1]);
+    const meta = readTile(layout.meta[0], layout.meta[1]);
+    for (let i = 0; i < birthCount; i++) {
+      const p = i * 4;
+      const posU16X = meansL[p] + meansU[p] * 256;
+      const posU16Y = meansL[p + 1] + meansU[p + 1] * 256;
+      const posU16Z = meansL[p + 2] + meansU[p + 2] * 256;
+      const posLog = new Float32Array([
+        this.posMins[0] + posU16X / 65535 * this.posRange[0],
+        this.posMins[1] + posU16Y / 65535 * this.posRange[1],
+        this.posMins[2] + posU16Z / 65535 * this.posRange[2]
+      ]);
+      const position = new Float32Array([
+        Math.sign(posLog[0]) * (Math.exp(Math.abs(posLog[0])) - 1),
+        Math.sign(posLog[1]) * (Math.exp(Math.abs(posLog[1])) - 1),
+        Math.sign(posLog[2]) * (Math.exp(Math.abs(posLog[2])) - 1)
+      ]);
+      const motU16X = motionL[p] + motionU[p] * 256;
+      const motU16Y = motionL[p + 1] + motionU[p + 1] * 256;
+      const motU16Z = motionL[p + 2] + motionU[p + 2] * 256;
+      const motLog = new Float32Array([
+        this.motionMins[0] + motU16X / 65535 * this.motionRange[0],
+        this.motionMins[1] + motU16Y / 65535 * this.motionRange[1],
+        this.motionMins[2] + motU16Z / 65535 * this.motionRange[2]
+      ]);
+      const motion = new Float32Array([
+        Math.sign(motLog[0]) * (Math.exp(Math.abs(motLog[0])) - 1),
+        Math.sign(motLog[1]) * (Math.exp(Math.abs(motLog[1])) - 1),
+        Math.sign(motLog[2]) * (Math.exp(Math.abs(motLog[2])) - 1)
+      ]);
+      const lifetime = meta[p] + meta[p + 1] * 256;
+      births.push({
+        quatsEncoded: new Uint8Array([
+          quats[p],
+          quats[p + 1],
+          quats[p + 2],
+          quats[p + 3]
+        ]),
+        scalesEncoded: new Uint8Array([
+          scales[p],
+          scales[p + 1],
+          scales[p + 2],
+          scales[p + 3]
+        ]),
+        sh0Encoded: new Uint8Array([
+          sh0[p],
+          sh0[p + 1],
+          sh0[p + 2],
+          sh0[p + 3]
+        ]),
+        position,
+        motion,
+        remainingFrames: lifetime,
+        justBorn: true
+        // Flag to skip first motion update
+      });
+    }
+    return births;
+  }
+  _assembleSogTexture() {
+    const ts = this.tileSize;
+    const sogWidth = this.sogWidth;
+    this.sogTileData.fill(0);
+    for (let i = 3; i < this.sogTileData.length; i += 4) {
+      this.sogTileData[i] = 255;
+    }
+    let idx = 0;
+    for (const g of this.activeGaussians) {
+      if (!g) continue;
+      const row = Math.floor(idx / ts);
+      const col = idx % ts;
+      const posEncoded = this._encodePosition(g.position);
+      const meansLBase = (row * sogWidth + col) * 4;
+      this.sogTileData[meansLBase] = posEncoded[0];
+      this.sogTileData[meansLBase + 1] = posEncoded[1];
+      this.sogTileData[meansLBase + 2] = posEncoded[2];
+      this.sogTileData[meansLBase + 3] = 255;
+      const meansUBase = (row * sogWidth + ts + col) * 4;
+      this.sogTileData[meansUBase] = posEncoded[3];
+      this.sogTileData[meansUBase + 1] = posEncoded[4];
+      this.sogTileData[meansUBase + 2] = posEncoded[5];
+      this.sogTileData[meansUBase + 3] = 255;
+      const quatsBase = (row * sogWidth + ts * 2 + col) * 4;
+      this.sogTileData.set(g.quatsEncoded, quatsBase);
+      const scalesBase = ((ts + row) * sogWidth + col) * 4;
+      this.sogTileData.set(g.scalesEncoded, scalesBase);
+      const sh0Base = ((ts + row) * sogWidth + ts + col) * 4;
+      this.sogTileData.set(g.sh0Encoded, sh0Base);
+      idx++;
+    }
+  }
+  _encodePosition(pos) {
+    const logX = Math.sign(pos[0]) * Math.log1p(Math.abs(pos[0]));
+    const logY = Math.sign(pos[1]) * Math.log1p(Math.abs(pos[1]));
+    const logZ = Math.sign(pos[2]) * Math.log1p(Math.abs(pos[2]));
+    const normX = (logX - this.posMins[0]) / this.posRange[0];
+    const normY = (logY - this.posMins[1]) / this.posRange[1];
+    const normZ = (logZ - this.posMins[2]) / this.posRange[2];
+    const u16X = Math.round(Math.max(0, Math.min(65535, normX * 65535)));
+    const u16Y = Math.round(Math.max(0, Math.min(65535, normY * 65535)));
+    const u16Z = Math.round(Math.max(0, Math.min(65535, normZ * 65535)));
+    return new Uint8Array([
+      u16X & 255,
+      u16Y & 255,
+      u16Z & 255,
+      // low bytes
+      u16X >> 8,
+      u16Y >> 8,
+      u16Z >> 8
+      // high bytes
+    ]);
+  }
+  getTotalFrames() {
+    return this.deltaFrames.length;
+  }
+  getSOGDimensions() {
+    return { width: this.sogWidth, height: this.sogHeight };
+  }
+}
+const _DeltaSplatMesh = class _DeltaSplatMesh extends SplatMesh {
   constructor(options = {}) {
     super(options);
-    this.frameData = [];
-    this.totalFrames = 0;
-    this.fps = 30;
-    this.frameInterval = 1e3 / 30;
-    this.videoWidth = 0;
-    this.videoHeight = 0;
+    this.decoder = null;
     this.frameTexture = null;
     this.tileUVs = null;
-    this.frameGaussianCounts = null;
-    this.staticCount = 0;
-    this.validationMetadata = null;
+    this.metadata = null;
     this.currentFrameIndex = 0;
     this.isPlaying = false;
     this.lastFrameTime = 0;
-    this.accumulatedTime = 0;
+    this.frameInterval = 1e3 / 30;
     this.onFrameChange = null;
-    this.quatTransformMode = 0;
-    this.maxScaleFilter = 0;
-    this.staticVizMode = 0;
-    this.staticThreshold = 0.5;
-    this.tScaleRange = [0, 1];
-    this.hasStaticDynamicSplit = false;
-    this.staticFrameIndex = 0;
-    this.dynamicFrameStart = 1;
-    this.staticFrameTexture = null;
-    this.staticGaussianCount = 0;
-    this.glTexture = null;
-    this.staticGlTexture = null;
-    this.lastLoggedFrame = -1;
-    this.frameDecodeCount = 0;
-  }
-  /**
-   * Set the quaternion transform mode for debugging coordinate system issues.
-   * The transform is applied to each gaussian's rotation quaternion after decoding.
-   */
-  setQuatTransformMode(mode) {
-    var _a2, _b2;
-    this.quatTransformMode = mode;
-    const gpuData = this.packedSplats.gpuVideoModeData;
-    if ((_b2 = (_a2 = gpuData == null ? void 0 : gpuData.material) == null ? void 0 : _a2.uniforms) == null ? void 0 : _b2.quatTransformMode) {
-      gpuData.material.uniforms.quatTransformMode.value = mode;
-    }
-  }
-  /**
-   * Get the current quaternion transform mode.
-   */
-  getQuatTransformMode() {
-    return this.quatTransformMode;
-  }
-  /**
-   * Get the name of a quaternion transform mode.
-   */
-  static getQuatTransformName(mode) {
-    return _VideoSplatMesh.QUAT_TRANSFORM_NAMES[mode] ?? `unknown(${mode})`;
-  }
-  /**
-   * Get the total number of quaternion transform modes.
-   */
-  static getQuatTransformCount() {
-    return _VideoSplatMesh.QUAT_TRANSFORM_NAMES.length;
-  }
-  /**
-   * Set the max scale filter. Gaussians with any axis larger than this will be hidden.
-   * Set to 0 to disable filtering.
-   */
-  setMaxScaleFilter(maxScale) {
-    var _a2, _b2;
-    this.maxScaleFilter = maxScale;
-    const gpuData = this.packedSplats.gpuVideoModeData;
-    if ((_b2 = (_a2 = gpuData == null ? void 0 : gpuData.material) == null ? void 0 : _a2.uniforms) == null ? void 0 : _b2.maxScaleFilter) {
-      gpuData.material.uniforms.maxScaleFilter.value = maxScale;
-    }
-  }
-  /**
-   * Get the current max scale filter value.
-   */
-  getMaxScaleFilter() {
-    return this.maxScaleFilter;
-  }
-  /**
-   * Enable/disable static visualization mode.
-   * When enabled, static gaussians (t_scale >= threshold) are rendered in green.
-   */
-  setStaticVizMode(enabled) {
-    var _a2, _b2;
-    this.staticVizMode = enabled ? 1 : 0;
-    const gpuData = this.packedSplats.gpuVideoModeData;
-    if ((_b2 = (_a2 = gpuData == null ? void 0 : gpuData.material) == null ? void 0 : _a2.uniforms) == null ? void 0 : _b2.staticVizMode) {
-      gpuData.material.uniforms.staticVizMode.value = this.staticVizMode;
-    }
-  }
-  /**
-   * Get whether static visualization mode is enabled.
-   */
-  getStaticVizMode() {
-    return this.staticVizMode === 1;
-  }
-  /**
-   * Set the t_scale threshold for static/dynamic classification.
-   * Gaussians with t_scale >= threshold are considered static.
-   */
-  setStaticThreshold(threshold) {
-    var _a2, _b2;
-    this.staticThreshold = threshold;
-    const gpuData = this.packedSplats.gpuVideoModeData;
-    if ((_b2 = (_a2 = gpuData == null ? void 0 : gpuData.material) == null ? void 0 : _a2.uniforms) == null ? void 0 : _b2.staticThreshold) {
-      gpuData.material.uniforms.staticThreshold.value = threshold;
-    }
-  }
-  /**
-   * Get the current static threshold value.
-   */
-  getStaticThreshold() {
-    return this.staticThreshold;
-  }
-  /**
-   * Get the t_scale range from metadata (for UI slider bounds).
-   * Returns [min, max] t_scale values.
-   */
-  getTScaleRange() {
-    return this.tScaleRange;
   }
   /**
    * Check if ImageDecoder API is available
@@ -12534,311 +12680,131 @@ const _VideoSplatMesh = class _VideoSplatMesh extends SplatMesh {
     return "ImageDecoder" in window;
   }
   /**
-   * Load an animated WebP video with JSON metadata
+   * Load a delta-encoded animated WebP video with JSON metadata
    */
-  async loadVideo(webpBlob, metadata) {
-    var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j;
+  async loadDelta(webpBlob, metadata) {
     const loadStart = performance.now();
-    if (!metadata.sog || !metadata.layout || !metadata.video) {
-      throw new Error("Invalid video metadata");
-    }
-    this.fps = metadata.video.fps || 30;
-    this.frameInterval = 1e3 / this.fps;
-    this.totalFrames = metadata.video.frames || 1;
-    const arrayBuffer = await webpBlob.arrayBuffer();
-    const decoder = new ImageDecoder({
-      data: arrayBuffer,
-      type: "image/webp"
-    });
-    await decoder.tracks.ready;
-    const selectedTrack = decoder.tracks.selectedTrack;
-    if (selectedTrack == null ? void 0 : selectedTrack.frameCount) {
-      this.totalFrames = selectedTrack.frameCount;
-    }
-    console.log(`VideoSplatMesh: ${this.totalFrames} frames @ ${this.fps}fps`);
-    this.frameData = [];
-    for (let i = 0; i < this.totalFrames; i++) {
-      const result = await decoder.decode({ frameIndex: i });
-      const frame = result.image;
-      if (i === 0) {
-        this.videoWidth = frame.displayWidth;
-        this.videoHeight = frame.displayHeight;
-      }
-      const bitmap = await createImageBitmap(frame, {
-        premultiplyAlpha: "none",
-        colorSpaceConversion: "none"
-      });
-      this.frameData.push(bitmap);
-      frame.close();
-    }
-    this.tileUVs = this.calculateTileUVs(metadata);
-    this.staticCount = metadata.sog.count;
-    if ((_a2 = metadata["4dgs"]) == null ? void 0 : _a2.frame_gaussian_counts) {
-      this.frameGaussianCounts = metadata["4dgs"].frame_gaussian_counts;
-    }
-    if ((_b2 = metadata["4dgs"]) == null ? void 0 : _b2.t_scale_range) {
-      this.tScaleRange = metadata["4dgs"].t_scale_range;
-      this.staticThreshold = (this.tScaleRange[0] + this.tScaleRange[1]) / 2;
-    }
-    if (((_c = metadata["4dgs"]) == null ? void 0 : _c.static_frame_index) !== void 0 && ((_d = metadata["4dgs"]) == null ? void 0 : _d.dynamic_frame_start) !== void 0) {
-      this.hasStaticDynamicSplit = true;
-      this.staticFrameIndex = metadata["4dgs"].static_frame_index;
-      this.dynamicFrameStart = metadata["4dgs"].dynamic_frame_start;
-      this.staticGaussianCount = ((_e = this.frameGaussianCounts) == null ? void 0 : _e[this.staticFrameIndex]) ?? 0;
-      console.log(
-        `[VideoSplatMesh] Static/dynamic split: static=${this.staticGaussianCount} gaussians in frame ${this.staticFrameIndex}, dynamic starts at frame ${this.dynamicFrameStart}`
-      );
-    }
-    const positionMins = ((_f = metadata.sog.means) == null ? void 0 : _f.mins) ?? [0, 0, 0];
-    const positionMaxs = ((_g = metadata.sog.means) == null ? void 0 : _g.maxs) ?? [1, 1, 1];
+    this.metadata = metadata;
+    this.decoder = new DeltaSplatDecoder(metadata);
+    await this.decoder.loadDeltaFrames(webpBlob);
+    const tileSize = metadata.tile_size;
+    const { width: sogWidth, height: sogHeight } = this.decoder.getSOGDimensions();
     const sparkMetadata = {
-      count: metadata.sog.count,
-      mins: positionMins,
-      maxs: positionMaxs,
+      count: metadata["4dgs"].max_active_gaussians,
+      mins: metadata.sog.means.mins,
+      maxs: metadata.sog.means.maxs,
       scaleCodebook: metadata.sog.scales.codebook,
-      sh0Codebook: metadata.sog.sh0.codebook,
-      tScaleCodebook: (_h = metadata.sog.t_scale) == null ? void 0 : _h.codebook
+      sh0Codebook: metadata.sog.sh0.codebook
     };
-    this.packedSplats.initVideoModeGPU(sparkMetadata, metadata.tile_size);
-    const scaleCodebook = metadata.sog.scales.codebook;
-    const lnScaleMin = Math.min(...scaleCodebook);
-    const lnScaleMax = Math.max(...scaleCodebook);
-    this.validationMetadata = {
-      positionMins,
-      positionMaxs,
-      scaleCodebook,
-      sh0Codebook: metadata.sog.sh0.codebook,
-      lnScaleMin,
-      lnScaleMax
+    this.packedSplats.initVideoModeGPU(sparkMetadata, tileSize);
+    this.tileUVs = {
+      means_l: {
+        u0: 0,
+        v0: 0,
+        u1: tileSize / sogWidth,
+        v1: tileSize / sogHeight
+      },
+      means_u: {
+        u0: tileSize / sogWidth,
+        v0: 0,
+        u1: 2 * tileSize / sogWidth,
+        v1: tileSize / sogHeight
+      },
+      quats: {
+        u0: 2 * tileSize / sogWidth,
+        v0: 0,
+        u1: 1,
+        v1: tileSize / sogHeight
+      },
+      scales: {
+        u0: 0,
+        v0: tileSize / sogHeight,
+        u1: tileSize / sogWidth,
+        v1: 1
+      },
+      sh0: {
+        u0: tileSize / sogWidth,
+        v0: tileSize / sogHeight,
+        u1: 2 * tileSize / sogWidth,
+        v1: 1
+      }
     };
-    const initialCount = ((_i = this.frameGaussianCounts) == null ? void 0 : _i[0]) ?? this.staticCount;
-    this.numSplats = initialCount;
+    const texData = new Uint8Array(sogWidth * sogHeight * 4);
+    this.frameTexture = new THREE.DataTexture(texData, sogWidth, sogHeight);
+    this.frameTexture.format = THREE.RGBAFormat;
+    this.frameTexture.type = THREE.UnsignedByteType;
+    this.frameTexture.minFilter = THREE.NearestFilter;
+    this.frameTexture.magFilter = THREE.NearestFilter;
+    this.frameTexture.generateMipmaps = false;
+    this.frameTexture.colorSpace = THREE.LinearSRGBColorSpace;
+    this.frameInterval = 1e3 / metadata.video.fps;
     const loadTime = performance.now() - loadStart;
-    console.log("[VideoSplatMesh] === Load Summary ===");
     console.log(
-      `  Frames: ${this.totalFrames} @ ${this.fps}fps (${(this.totalFrames / this.fps).toFixed(2)}s)`
+      `DeltaSplatMesh loaded: ${this.decoder.getTotalFrames()} frames @ ${metadata.video.fps}fps`
     );
-    console.log(`  Texture: ${this.videoWidth}x${this.videoHeight}`);
-    console.log(`  Tile size: ${metadata.tile_size}px`);
-    console.log(`  Max splat capacity: ${this.staticCount.toLocaleString()}`);
-    if (this.hasStaticDynamicSplit) {
-      const dynamicCounts = ((_j = this.frameGaussianCounts) == null ? void 0 : _j.slice(this.dynamicFrameStart)) ?? [];
-      const minDynamic = dynamicCounts.length > 0 ? Math.min(...dynamicCounts) : 0;
-      const maxDynamic = dynamicCounts.length > 0 ? Math.max(...dynamicCounts) : 0;
-      console.log(
-        `  Static/Dynamic split: ${this.staticGaussianCount.toLocaleString()} static + ${minDynamic.toLocaleString()}-${maxDynamic.toLocaleString()} dynamic per frame`
-      );
-    } else if (this.frameGaussianCounts) {
-      const minCount = Math.min(...this.frameGaussianCounts);
-      const maxCount = Math.max(...this.frameGaussianCounts);
-      console.log(
-        `  Dynamic counts: ${minCount.toLocaleString()} - ${maxCount.toLocaleString()} splats/frame`
-      );
-      console.log(`  Frame counts: [${this.frameGaussianCounts.join(", ")}]`);
-    } else {
-      console.log(
-        `  Static count: ${this.staticCount.toLocaleString()} splats/frame`
-      );
-    }
-    console.log(
-      `  Bounds: [${sparkMetadata.mins.map((v) => v.toFixed(3)).join(", ")}] to [${sparkMetadata.maxs.map((v) => v.toFixed(3)).join(", ")}]`
-    );
-    console.log(`  Load time: ${loadTime.toFixed(0)}ms`);
-    console.log("[VideoSplatMesh] === Ready ===");
     return { loadTime };
   }
-  calculateTileUVs(metadata) {
-    const tileSize = metadata.tile_size;
-    const layout = metadata.layout;
-    const w = this.videoWidth;
-    const h = this.videoHeight;
-    const getTileUV = (name) => {
-      const [col, row] = layout[name];
-      const x = col * tileSize;
-      const y = row * tileSize;
-      return {
-        u0: x / w,
-        v0: y / h,
-        u1: (x + tileSize) / w,
-        v1: (y + tileSize) / h
-      };
-    };
-    const result = {
-      means_l: getTileUV("means_l"),
-      means_u: getTileUV("means_u"),
-      quats: getTileUV("quats"),
-      scales: getTileUV("scales"),
-      sh0: getTileUV("sh0")
-    };
-    if (layout.t_scale) {
-      result.t_scale = getTileUV("t_scale");
-    }
-    return result;
+  /**
+   * Decode first frame without starting playback.
+   */
+  decodeFirstFrame(renderer) {
+    if (!this.decoder) return;
+    this.decoder.reset();
+    this.currentFrameIndex = 0;
+    const { data, count } = this.decoder.processFrame(0);
+    this._uploadFrame(renderer, data, count);
   }
   /**
-   * Upload frame to GPU using raw WebGL, bypassing THREE.js color management.
-   * Guarantees no color space conversion, no alpha premultiplication.
+   * Seek to a specific frame.
+   * Note: Delta decoding requires sequential processing.
+   * If seeking backwards, resets and processes from beginning.
    */
-  uploadFrameRawWebGL(renderer, index) {
-    if (index < 0 || index >= this.frameData.length) return;
-    const bitmap = this.frameData[index];
-    const gl = renderer.getContext();
-    this.currentFrameIndex = index;
-    if (!this.frameTexture) {
-      this.frameTexture = new THREE.Texture();
-      this.frameTexture.minFilter = THREE.NearestFilter;
-      this.frameTexture.magFilter = THREE.NearestFilter;
-      this.frameTexture.generateMipmaps = false;
-      this.frameTexture.colorSpace = THREE.NoColorSpace;
-      this.glTexture = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, this.glTexture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      const texProps = renderer.properties.get(this.frameTexture);
-      texProps.__webglTexture = this.glTexture;
-      texProps.__webglInit = true;
+  seekToFrame(frame, renderer) {
+    if (!this.decoder) return;
+    if (frame < this.decoder.currentFrameIndex) {
+      this.decoder.reset();
     }
-    gl.bindTexture(gl.TEXTURE_2D, this.glTexture);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA8,
-      // Raw RGBA, not SRGB8_ALPHA8
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      bitmap
-    );
-  }
-  /**
-   * Upload static frame to a separate texture (called once during first decode)
-   */
-  uploadStaticFrameTexture(renderer) {
-    if (this.staticFrameTexture || !this.hasStaticDynamicSplit) return;
-    const gl = renderer.getContext();
-    const bitmap = this.frameData[this.staticFrameIndex];
-    if (!bitmap) return;
-    this.staticFrameTexture = new THREE.Texture();
-    this.staticFrameTexture.minFilter = THREE.NearestFilter;
-    this.staticFrameTexture.magFilter = THREE.NearestFilter;
-    this.staticFrameTexture.generateMipmaps = false;
-    this.staticFrameTexture.colorSpace = THREE.NoColorSpace;
-    this.staticGlTexture = gl.createTexture();
-    if (!this.staticGlTexture) return;
-    gl.bindTexture(gl.TEXTURE_2D, this.staticGlTexture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    const texProps = renderer.properties.get(this.staticFrameTexture);
-    texProps.__webglTexture = this.staticGlTexture;
-    texProps.__webglInit = true;
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA8,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      bitmap
-    );
-    this.packedSplats.setStaticFrame(
-      this.staticFrameTexture,
-      this.staticGaussianCount
-    );
-    console.log(
-      `[VideoSplatMesh] Static frame uploaded: ${this.staticGaussianCount.toLocaleString()} gaussians`
-    );
-  }
-  /**
-   * Decode a frame to GPU. Single path for all frame updates.
-   */
-  decodeFrame(renderer, frameIndex) {
-    var _a2, _b2, _c;
-    if (!this.tileUVs) return;
-    if (this.hasStaticDynamicSplit) {
-      this.uploadStaticFrameTexture(renderer);
-    }
-    this.uploadFrameRawWebGL(renderer, frameIndex);
-    if (!this.frameTexture) return;
-    let expectedCount;
-    if (this.hasStaticDynamicSplit) {
-      const dynamicCount = ((_a2 = this.frameGaussianCounts) == null ? void 0 : _a2[frameIndex]) ?? 0;
-      expectedCount = this.staticGaussianCount + dynamicCount;
-    } else {
-      expectedCount = ((_b2 = this.frameGaussianCounts) == null ? void 0 : _b2[frameIndex]) ?? this.staticCount;
-    }
-    this.packedSplats.updateVideoSplatCount(expectedCount);
-    this.numSplats = expectedCount;
-    this.packedSplats.updateFromVideoTextureGPU(
-      renderer,
-      this.frameTexture,
-      this.tileUVs,
-      this.videoWidth,
-      this.videoHeight
-    );
-    this.updateVersion();
-    this.frameDecodeCount++;
-    if (frameIndex !== this.lastLoggedFrame) {
-      const hasDynamicCounts = this.frameGaussianCounts !== null;
-      console.log(
-        `[VideoSplatMesh] Frame ${frameIndex}/${this.totalFrames - 1}: splats=${expectedCount.toLocaleString()} (${hasDynamicCounts ? "dynamic" : "static"}) texture=${this.videoWidth}x${this.videoHeight} tile=${this.tileUVs ? "ready" : "missing"}`
-      );
-      this.lastLoggedFrame = frameIndex;
-    }
-    (_c = this.onFrameChange) == null ? void 0 : _c.call(this, this.currentFrameIndex, this.totalFrames);
+    const { data, count } = this.decoder.processFrame(frame);
+    this.currentFrameIndex = frame;
+    this._uploadFrame(renderer, data, count);
   }
   /**
    * Call each frame from the render loop.
    * Returns true if a new frame was decoded.
    */
   tick(renderer, now = performance.now()) {
-    if (!this.isPlaying || !this.frameTexture || !this.tileUVs) {
+    if (!this.isPlaying || !this.decoder || !this.frameTexture || !this.tileUVs) {
       return false;
     }
-    if (this.lastFrameTime === 0) {
-      this.lastFrameTime = now;
-      this.accumulatedTime = 0;
-    }
-    const deltaTime = now - this.lastFrameTime;
+    if (this.lastFrameTime === 0) this.lastFrameTime = now;
+    if (now - this.lastFrameTime < this.frameInterval) return false;
     this.lastFrameTime = now;
-    this.accumulatedTime += deltaTime;
-    if (this.accumulatedTime < this.frameInterval) {
-      return false;
-    }
-    this.accumulatedTime -= this.frameInterval;
-    if (this.hasStaticDynamicSplit) {
-      const dynamicFrameCount = this.totalFrames - this.dynamicFrameStart;
-      const dynamicIndex = (this.currentFrameIndex - this.dynamicFrameStart + 1) % dynamicFrameCount + this.dynamicFrameStart;
-      this.currentFrameIndex = dynamicIndex;
-    } else {
-      this.currentFrameIndex = (this.currentFrameIndex + 1) % this.totalFrames;
-    }
-    this.decodeFrame(renderer, this.currentFrameIndex);
+    this.currentFrameIndex = (this.currentFrameIndex + 1) % this.decoder.getTotalFrames();
+    const { data, count } = this.decoder.processFrame(this.currentFrameIndex);
+    this._uploadFrame(renderer, data, count);
     return true;
   }
-  /**
-   * Decode first frame without starting playback.
-   * For static/dynamic split, decodes the first dynamic frame (which composites with static).
-   */
-  decodeFirstFrame(renderer) {
-    const startFrame = this.hasStaticDynamicSplit ? this.dynamicFrameStart : 0;
-    this.currentFrameIndex = startFrame;
-    this.decodeFrame(renderer, startFrame);
+  _uploadFrame(renderer, data, count) {
+    var _a2;
+    if (!this.frameTexture || !this.tileUVs) return;
+    const imageData = this.frameTexture.image;
+    imageData.data.set(data);
+    this.frameTexture.needsUpdate = true;
+    this.packedSplats.updateVideoSplatCount(count);
+    this.numSplats = count;
+    this.packedSplats.updateFromVideoTextureGPU(
+      renderer,
+      this.frameTexture,
+      this.tileUVs,
+      imageData.width,
+      imageData.height
+    );
+    this.updateVersion();
+    (_a2 = this.onFrameChange) == null ? void 0 : _a2.call(this, this.currentFrameIndex, this.getTotalFrames());
   }
   play() {
     this.isPlaying = true;
     this.lastFrameTime = 0;
-    this.accumulatedTime = 0;
-    if (this.hasStaticDynamicSplit && this.currentFrameIndex < this.dynamicFrameStart) {
-      this.currentFrameIndex = this.dynamicFrameStart;
-    }
   }
   pause() {
     this.isPlaying = false;
@@ -12850,437 +12816,55 @@ const _VideoSplatMesh = class _VideoSplatMesh extends SplatMesh {
       this.play();
     }
   }
-  seekToFrame(frame, renderer) {
-    const frameIndex = Math.max(0, Math.min(frame, this.totalFrames - 1));
-    this.decodeFrame(renderer, frameIndex);
-  }
   getTotalFrames() {
-    return this.totalFrames;
+    var _a2;
+    return ((_a2 = this.decoder) == null ? void 0 : _a2.getTotalFrames()) || 0;
   }
   getFPS() {
-    return this.fps;
+    var _a2, _b2;
+    return ((_b2 = (_a2 = this.metadata) == null ? void 0 : _a2.video) == null ? void 0 : _b2.fps) || 30;
   }
-  /**
-   * Validate the decode pipeline by reading back raw pixels and decoded splat data.
-   * Traces through ALL shader math step-by-step with actual codebook values.
-   * Call this from browser console: videoMesh.validateDecode(renderer)
-   */
-  async validateDecode(renderer, splatIndex = 0) {
-    if (!this.frameData.length || !this.tileUVs) {
-      console.error("[Validate] No frame data or tile UVs");
-      return;
-    }
-    if (!this.validationMetadata) {
-      console.error("[Validate] No validation metadata");
-      return;
-    }
-    const meta = this.validationMetadata;
-    const gl = renderer.getContext();
-    const frameIndex = this.currentFrameIndex;
-    const bitmap = this.frameData[frameIndex];
-    console.log(
-      "[Validate] ═══════════════════════════════════════════════════"
-    );
-    console.log("[Validate] COMPREHENSIVE SHADER PIPELINE VALIDATION");
-    console.log(
-      "[Validate] ═══════════════════════════════════════════════════"
-    );
-    console.log(`  Frame: ${frameIndex}, Splat: ${splatIndex}`);
-    console.log(`  Texture: ${this.videoWidth}x${this.videoHeight}`);
-    console.log(
-      `  Position bounds: [${meta.positionMins.join(", ")}] to [${meta.positionMaxs.join(", ")}]`
-    );
-    console.log(
-      `  Scale range: ln(${meta.lnScaleMin.toFixed(3)}) to ln(${meta.lnScaleMax.toFixed(3)})`
-    );
-    const tempTex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, tempTex);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA8,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      bitmap
-    );
-    const fb = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    gl.framebufferTexture2D(
-      gl.FRAMEBUFFER,
-      gl.COLOR_ATTACHMENT0,
-      gl.TEXTURE_2D,
-      tempTex,
-      0
-    );
-    const readRawPixel = (px, py) => {
-      const pixel = new Uint8Array(4);
-      gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
-      return { r: pixel[0], g: pixel[1], b: pixel[2], a: pixel[3], px, py };
-    };
-    const tileSize = Math.round(
-      this.tileUVs.means_l.u1 * this.videoWidth - this.tileUVs.means_l.u0 * this.videoWidth
-    );
-    const tileX = splatIndex % tileSize;
-    const tileY = Math.floor(splatIndex / tileSize);
-    const readTilePixel = (tileUV) => {
-      const tileStartX = Math.round(tileUV.u0 * this.videoWidth);
-      const tileStartY = Math.round(tileUV.v0 * this.videoHeight);
-      const px = tileStartX + tileX;
-      const py = tileStartY + tileY;
-      return readRawPixel(px, py);
-    };
-    const meansL = readTilePixel(this.tileUVs.means_l);
-    const meansU = readTilePixel(this.tileUVs.means_u);
-    const quats = readTilePixel(this.tileUVs.quats);
-    const scales = readTilePixel(this.tileUVs.scales);
-    const sh0 = readTilePixel(this.tileUVs.sh0);
-    console.log("\n[Validate] ── STEP 1: RAW TILE PIXELS ──");
-    console.log(
-      `  means_l[${meansL.px},${meansL.py}]: R=${meansL.r} G=${meansL.g} B=${meansL.b} A=${meansL.a}`
-    );
-    console.log(
-      `  means_u[${meansU.px},${meansU.py}]: R=${meansU.r} G=${meansU.g} B=${meansU.b} A=${meansU.a}`
-    );
-    console.log(
-      `  quats[${quats.px},${quats.py}]: R=${quats.r} G=${quats.g} B=${quats.b} A=${quats.a}`
-    );
-    console.log(
-      `  scales[${scales.px},${scales.py}]: R=${scales.r} G=${scales.g} B=${scales.b} A=${scales.a}`
-    );
-    console.log(
-      `  sh0[${sh0.px},${sh0.py}]: R=${sh0.r} G=${sh0.g} B=${sh0.b} A=${sh0.a}`
-    );
-    console.log("\n[Validate] ── STEP 2: POSITION DECODE ──");
-    const posX_u16 = meansL.r + meansU.r * 256;
-    const posY_u16 = meansL.g + meansU.g * 256;
-    const posZ_u16 = meansL.b + meansU.b * 256;
-    console.log(`  uint16: X=${posX_u16}, Y=${posY_u16}, Z=${posZ_u16}`);
-    const posXnorm = posX_u16 / 65535;
-    const posYnorm = posY_u16 / 65535;
-    const posZnorm = posZ_u16 / 65535;
-    console.log(
-      `  normalized: X=${posXnorm.toFixed(6)}, Y=${posYnorm.toFixed(6)}, Z=${posZnorm.toFixed(6)}`
-    );
-    const posXlog = meta.positionMins[0] + (meta.positionMaxs[0] - meta.positionMins[0]) * posXnorm;
-    const posYlog = meta.positionMins[1] + (meta.positionMaxs[1] - meta.positionMins[1]) * posYnorm;
-    const posZlog = meta.positionMins[2] + (meta.positionMaxs[2] - meta.positionMins[2]) * posZnorm;
-    console.log(
-      `  log-space: X=${posXlog.toFixed(6)}, Y=${posYlog.toFixed(6)}, Z=${posZlog.toFixed(6)}`
-    );
-    const expTransform = (v) => Math.sign(v) * (Math.exp(Math.abs(v)) - 1);
-    const expectedPosX = expTransform(posXlog);
-    const expectedPosY = expTransform(posYlog);
-    const expectedPosZ = expTransform(posZlog);
-    console.log(
-      `  EXPECTED position: X=${expectedPosX.toFixed(6)}, Y=${expectedPosY.toFixed(6)}, Z=${expectedPosZ.toFixed(6)}`
-    );
-    console.log(
-      "\n[Validate] ── STEP 3: QUATERNION DECODE (smallest-three) ──"
-    );
-    const SQRT2 = Math.sqrt(2);
-    const r0 = (quats.r / 255 - 0.5) * SQRT2;
-    const r1 = (quats.g / 255 - 0.5) * SQRT2;
-    const r2 = (quats.b / 255 - 0.5) * SQRT2;
-    console.log(
-      `  decoded components: r0=${r0.toFixed(6)}, r1=${r1.toFixed(6)}, r2=${r2.toFixed(6)}`
-    );
-    const rr = Math.sqrt(Math.max(0, 1 - r0 * r0 - r1 * r1 - r2 * r2));
-    console.log(`  reconstructed component: rr=${rr.toFixed(6)}`);
-    const rOrder = quats.a - 252;
-    console.log(`  order index: ${rOrder} (alpha=${quats.a})`);
-    let expectedQuat;
-    if (rOrder === 0) {
-      expectedQuat = [r0, r1, r2, rr];
-    } else if (rOrder === 1) {
-      expectedQuat = [rr, r1, r2, r0];
-    } else if (rOrder === 2) {
-      expectedQuat = [r1, rr, r2, r0];
-    } else {
-      expectedQuat = [r1, r2, rr, r0];
-    }
-    const qLen = Math.sqrt(
-      expectedQuat[0] ** 2 + expectedQuat[1] ** 2 + expectedQuat[2] ** 2 + expectedQuat[3] ** 2
-    );
-    expectedQuat = expectedQuat.map((q) => q / qLen);
-    console.log(
-      `  EXPECTED quaternion: [${expectedQuat.map((q) => q.toFixed(6)).join(", ")}]`
-    );
-    console.log("\n[Validate] ── STEP 4: SCALE DECODE (codebook) ──");
-    const scaleIdxX = scales.r;
-    const scaleIdxY = scales.g;
-    const scaleIdxZ = scales.b;
-    console.log(
-      `  codebook indices: X=${scaleIdxX}, Y=${scaleIdxY}, Z=${scaleIdxZ}`
-    );
-    const logScaleX = meta.scaleCodebook[scaleIdxX] ?? meta.scaleCodebook[0];
-    const logScaleY = meta.scaleCodebook[scaleIdxY] ?? meta.scaleCodebook[0];
-    const logScaleZ = meta.scaleCodebook[scaleIdxZ] ?? meta.scaleCodebook[0];
-    console.log(
-      `  log-scale values: X=${logScaleX.toFixed(6)}, Y=${logScaleY.toFixed(6)}, Z=${logScaleZ.toFixed(6)}`
-    );
-    const expectedScaleX = Math.exp(logScaleX);
-    const expectedScaleY = Math.exp(logScaleY);
-    const expectedScaleZ = Math.exp(logScaleZ);
-    console.log(
-      `  EXPECTED scales: X=${expectedScaleX.toExponential(6)}, Y=${expectedScaleY.toExponential(6)}, Z=${expectedScaleZ.toExponential(6)}`
-    );
-    console.log("\n[Validate] ── STEP 5: COLOR DECODE (SH0 codebook) ──");
-    const SH_C02 = 0.28209479177387814;
-    const sh0IdxR = sh0.r;
-    const sh0IdxG = sh0.g;
-    const sh0IdxB = sh0.b;
-    console.log(`  codebook indices: R=${sh0IdxR}, G=${sh0IdxG}, B=${sh0IdxB}`);
-    const sh0R = meta.sh0Codebook[sh0IdxR] ?? meta.sh0Codebook[0];
-    const sh0G = meta.sh0Codebook[sh0IdxG] ?? meta.sh0Codebook[0];
-    const sh0B = meta.sh0Codebook[sh0IdxB] ?? meta.sh0Codebook[0];
-    console.log(
-      `  SH0 values: R=${sh0R.toFixed(6)}, G=${sh0G.toFixed(6)}, B=${sh0B.toFixed(6)}`
-    );
-    const colorR = Math.max(0, Math.min(1, SH_C02 * sh0R + 0.5));
-    const colorG = Math.max(0, Math.min(1, SH_C02 * sh0G + 0.5));
-    const colorB = Math.max(0, Math.min(1, SH_C02 * sh0B + 0.5));
-    const colorA = sh0.a / 255;
-    console.log(
-      `  EXPECTED RGBA (0-1): R=${colorR.toFixed(6)}, G=${colorG.toFixed(6)}, B=${colorB.toFixed(6)}, A=${colorA.toFixed(6)}`
-    );
-    console.log(
-      `  EXPECTED RGBA (0-255): R=${Math.round(colorR * 255)}, G=${Math.round(colorG * 255)}, B=${Math.round(colorB * 255)}, A=${sh0.a}`
-    );
-    console.log("\n[Validate] ── STEP 6: EXPECTED PACKED FORMAT ──");
-    const packedR = Math.round(Math.max(0, Math.min(255, colorR * 255)));
-    const packedG = Math.round(Math.max(0, Math.min(255, colorG * 255)));
-    const packedB = Math.round(Math.max(0, Math.min(255, colorB * 255)));
-    const packedA = sh0.a;
-    const expectedWord0 = packedR | packedG << 8 | packedB << 16 | packedA << 24;
-    console.log(
-      `  Expected word0 (RGBA): 0x${expectedWord0.toString(16).padStart(8, "0")}`
-    );
-    console.log(
-      `    -> R=${packedR}, G=${packedG}, B=${packedB}, A=${packedA}`
-    );
-    const packF16 = (val) => {
-      if (val === 0) return 0;
-      const sign2 = val < 0 ? 1 : 0;
-      const absVal = Math.abs(val);
-      const exp3 = Math.floor(Math.log2(absVal));
-      const expBiased = exp3 + 15;
-      if (expBiased <= 0) return sign2 << 15;
-      if (expBiased >= 31) return sign2 << 15 | 31744;
-      const frac = Math.round((absVal / 2 ** exp3 - 1) * 1024);
-      return sign2 << 15 | expBiased << 10 | frac & 1023;
-    };
-    const posXf16 = packF16(expectedPosX);
-    const posYf16 = packF16(expectedPosY);
-    const posZf16 = packF16(expectedPosZ);
-    const expectedWord1 = posXf16 | posYf16 << 16;
-    console.log(
-      `  Expected word1 (pos XY): 0x${expectedWord1.toString(16).padStart(8, "0")}`
-    );
-    console.log(
-      `    -> posX_f16=0x${posXf16.toString(16)}, posY_f16=0x${posYf16.toString(16)}`
-    );
-    const encodeQuatOctXy88R82 = (q) => {
-      let [qx, qy, qz, qw] = q;
-      if (qw < 0) {
-        qx = -qx;
-        qy = -qy;
-        qz = -qz;
-        qw = -qw;
-      }
-      const theta = 2 * Math.acos(Math.min(1, qw));
-      const halfTheta = theta * 0.5;
-      const s = Math.sin(halfTheta);
-      let axis;
-      if (Math.abs(s) < 1e-6) {
-        axis = [1, 0, 0];
-      } else {
-        axis = [qx / s, qy / s, qz / s];
-      }
-      const sum = Math.abs(axis[0]) + Math.abs(axis[1]) + Math.abs(axis[2]);
-      let px = axis[0] / sum;
-      let py = axis[1] / sum;
-      if (axis[2] < 0) {
-        const oldPx = px;
-        px = (1 - Math.abs(py)) * (px >= 0 ? 1 : -1);
-        py = (1 - Math.abs(oldPx)) * (py >= 0 ? 1 : -1);
-      }
-      const u_f = px * 0.5 + 0.5;
-      const v_f = py * 0.5 + 0.5;
-      const quantU = Math.round(Math.max(0, Math.min(255, u_f * 255)));
-      const quantV = Math.round(Math.max(0, Math.min(255, v_f * 255)));
-      const angleInt = Math.round(
-        Math.max(0, Math.min(255, theta / Math.PI * 255))
-      );
-      return angleInt << 16 | quantV << 8 | quantU;
-    };
-    const uQuat = encodeQuatOctXy88R82(expectedQuat);
-    const uQuat0 = uQuat & 255;
-    const uQuat1 = uQuat >> 8 & 255;
-    const uQuat2 = uQuat >> 16 & 255;
-    console.log(
-      `  Quaternion octahedral: 0x${uQuat.toString(16).padStart(6, "0")}`
-    );
-    console.log(`    -> bytes: [${uQuat0}, ${uQuat1}, ${uQuat2}]`);
-    const lnScaleScale = 254 / (meta.lnScaleMax - meta.lnScaleMin);
-    const packScale = (s) => {
-      if (s === 0) return 0;
-      const encoded = Math.round(
-        Math.max(
-          0,
-          Math.min(254, (Math.log(s) - meta.lnScaleMin) * lnScaleScale)
-        )
-      ) + 1;
-      return encoded;
-    };
-    const uScaleX = packScale(expectedScaleX);
-    const uScaleY = packScale(expectedScaleY);
-    const uScaleZ = packScale(expectedScaleZ);
-    console.log(`  Packed scales: X=${uScaleX}, Y=${uScaleY}, Z=${uScaleZ}`);
-    const expectedWord2 = (posZf16 | uQuat0 << 16 | uQuat1 << 24) >>> 0;
-    const expectedWord3 = (uScaleX | uScaleY << 8 | uScaleZ << 16 | uQuat2 << 24) >>> 0;
-    console.log(
-      `  Expected word2: 0x${expectedWord2.toString(16).padStart(8, "0")}`
-    );
-    console.log(
-      `  Expected word3: 0x${expectedWord3.toString(16).padStart(8, "0")}`
-    );
-    console.log("\n[Validate] ── STEP 7: ACTUAL GPU OUTPUT ──");
-    const target = this.packedSplats.target;
-    if (!target) {
-      console.error("[Validate] No render target");
-      return;
-    }
-    const SPLAT_TEX_WIDTH2 = 2048;
-    const SPLAT_TEX_HEIGHT2 = 2048;
-    const layerSize = SPLAT_TEX_WIDTH2 * SPLAT_TEX_HEIGHT2;
-    const layer = Math.floor(splatIndex / layerSize);
-    const indexInLayer = splatIndex % layerSize;
-    const splatX = indexInLayer % SPLAT_TEX_WIDTH2;
-    const splatY = Math.floor(indexInLayer / SPLAT_TEX_WIDTH2);
-    const readBuffer = new Uint32Array(4);
-    renderer.setRenderTarget(target, layer);
-    gl.readPixels(
-      splatX,
-      splatY,
-      1,
-      1,
-      gl.RGBA_INTEGER,
-      gl.UNSIGNED_INT,
-      readBuffer
-    );
-    renderer.setRenderTarget(null);
-    console.log(
-      `  Actual word0: 0x${readBuffer[0].toString(16).padStart(8, "0")}`
-    );
-    console.log(
-      `  Actual word1: 0x${readBuffer[1].toString(16).padStart(8, "0")}`
-    );
-    console.log(
-      `  Actual word2: 0x${readBuffer[2].toString(16).padStart(8, "0")}`
-    );
-    console.log(
-      `  Actual word3: 0x${readBuffer[3].toString(16).padStart(8, "0")}`
-    );
-    console.log("\n[Validate] ── STEP 8: COMPARISON ──");
-    const compareWord = (name, expected, actual) => {
-      const match = expected === actual;
-      const status = match ? "✓" : "✗";
-      console.log(
-        `  ${status} ${name}: expected=0x${expected.toString(16).padStart(8, "0")}, actual=0x${actual.toString(16).padStart(8, "0")}`
-      );
-      if (!match) {
-        console.log(
-          `     XOR diff: 0x${(expected ^ actual).toString(16).padStart(8, "0")}`
-        );
-      }
-      return match;
-    };
-    const w0Match = compareWord("word0 (RGBA)", expectedWord0, readBuffer[0]);
-    const w1Match = compareWord("word1 (pos XY)", expectedWord1, readBuffer[1]);
-    const w2Match = compareWord(
-      "word2 (pos Z + quat)",
-      expectedWord2,
-      readBuffer[2]
-    );
-    const w3Match = compareWord(
-      "word3 (scales + quat)",
-      expectedWord3,
-      readBuffer[3]
-    );
-    const unpackF16 = (bits2) => {
-      const sign2 = bits2 >> 15 & 1;
-      const exp3 = bits2 >> 10 & 31;
-      const frac = bits2 & 1023;
-      if (exp3 === 0) return sign2 ? -0 : 0;
-      if (exp3 === 31)
-        return sign2 ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
-      return (sign2 ? -1 : 1) * 2 ** (exp3 - 15) * (1 + frac / 1024);
-    };
-    const actualPosX = unpackF16(readBuffer[1] & 65535);
-    const actualPosY = unpackF16(readBuffer[1] >> 16 & 65535);
-    const actualPosZ = unpackF16(readBuffer[2] & 65535);
-    console.log("\n[Validate] ── POSITION COMPARISON ──");
-    console.log(
-      `  Expected: [${expectedPosX.toFixed(6)}, ${expectedPosY.toFixed(6)}, ${expectedPosZ.toFixed(6)}]`
-    );
-    console.log(
-      `  Actual:   [${actualPosX.toFixed(6)}, ${actualPosY.toFixed(6)}, ${actualPosZ.toFixed(6)}]`
-    );
-    console.log(
-      `  Delta:    [${(actualPosX - expectedPosX).toFixed(6)}, ${(actualPosY - expectedPosY).toFixed(6)}, ${(actualPosZ - expectedPosZ).toFixed(6)}]`
-    );
-    const actualR = readBuffer[0] & 255;
-    const actualG = readBuffer[0] >> 8 & 255;
-    const actualB = readBuffer[0] >> 16 & 255;
-    const actualA = readBuffer[0] >> 24 & 255;
-    console.log("\n[Validate] ── RGBA COMPARISON ──");
-    console.log(`  Expected: [${packedR}, ${packedG}, ${packedB}, ${packedA}]`);
-    console.log(`  Actual:   [${actualR}, ${actualG}, ${actualB}, ${actualA}]`);
-    console.log(
-      `  Delta:    [${actualR - packedR}, ${actualG - packedG}, ${actualB - packedB}, ${actualA - packedA}]`
-    );
-    console.log(
-      "\n[Validate] ═══════════════════════════════════════════════════"
-    );
-    if (w0Match && w1Match && w2Match && w3Match) {
-      console.log(
-        "[Validate] ✓ ALL WORDS MATCH - Pipeline is working correctly!"
-      );
-    } else {
-      console.log(
-        "[Validate] ✗ MISMATCH DETECTED - Check comparison above for details"
-      );
-      if (readBuffer[0] === 0 && readBuffer[1] === 0 && readBuffer[2] === 0 && readBuffer[3] === 0) {
-        console.log(
-          "[Validate] ⚠️ All zeros - shader may not have written to this splat!"
-        );
-        console.log(`  splatIndex=${splatIndex}, splatCount=${this.numSplats}`);
-      }
-    }
-    console.log(
-      "[Validate] ═══════════════════════════════════════════════════"
-    );
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.deleteFramebuffer(fb);
-    gl.deleteTexture(tempTex);
+  // Stub methods for API compatibility with VideoSplatMesh
+  // Delta encoding applies transforms at encode time
+  setQuatTransformMode(_mode) {
+    console.log("Delta encoding: quat transform applied at encode time");
+  }
+  getQuatTransformMode() {
+    return 0;
+  }
+  setMaxScaleFilter(_maxScale) {
+  }
+  getMaxScaleFilter() {
+    return 0;
+  }
+  setStaticVizMode(_enabled) {
+  }
+  getStaticVizMode() {
+    return false;
+  }
+  setStaticThreshold(_threshold) {
+  }
+  getStaticThreshold() {
+    return 0;
+  }
+  getTScaleRange() {
+    return [0, 1];
   }
   dispose() {
-    super.dispose();
     if (this.frameTexture) {
       this.frameTexture.dispose();
       this.frameTexture = null;
     }
-    this.glTexture = null;
-    for (const bitmap of this.frameData) {
-      bitmap.close();
-    }
-    this.frameData = [];
+    super.dispose();
+  }
+  static getQuatTransformName(mode) {
+    return _DeltaSplatMesh.QUAT_TRANSFORM_NAMES[mode] ?? `unknown(${mode})`;
+  }
+  static getQuatTransformCount() {
+    return _DeltaSplatMesh.QUAT_TRANSFORM_NAMES.length;
   }
 };
-_VideoSplatMesh.QUAT_TRANSFORM_NAMES = [
+_DeltaSplatMesh.QUAT_TRANSFORM_NAMES = [
   "identity",
   "rotX+90",
   "rotX-90",
@@ -13314,7 +12898,7 @@ _VideoSplatMesh.QUAT_TRANSFORM_NAMES = [
   "XYZW→WXYZ",
   "cycleYZWX"
 ];
-let VideoSplatMesh = _VideoSplatMesh;
+let DeltaSplatMesh = _DeltaSplatMesh;
 class SplatSkinning {
   constructor(options) {
     this.mesh = options.mesh;
@@ -15150,6 +14734,8 @@ class PointerControls {
   }
 }
 export {
+  DeltaSplatDecoder,
+  DeltaSplatMesh,
   FINGER_TIPS,
   FpsMovement,
   HANDS,
@@ -15191,7 +14777,6 @@ export {
   SpzWriter,
   Uint8ToFloat,
   VRButton,
-  VideoSplatMesh,
   XrHands,
   constructAxes,
   constructGrid,
