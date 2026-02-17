@@ -3,6 +3,8 @@
  *
  * Each frame contains only newly-born gaussians with motion vectors and lifetimes.
  * The decoder accumulates births, interpolates positions, and reconstructs full SOG textures.
+ *
+ * Uses canvas 2D with careful color space handling to read raw pixel data.
  */
 /**
  * Metadata format for delta-encoded 4DGS video files (JSON sidecar)
@@ -40,6 +42,7 @@ export interface Delta4DGSMetadata {
 export declare class DeltaSplatDecoder {
     private metadata;
     private tileSize;
+    private sogTileSize;
     private posMins;
     private posMaxs;
     private posRange;
@@ -51,14 +54,19 @@ export declare class DeltaSplatDecoder {
     private freeSlots;
     private activeCount;
     currentFrameIndex: number;
-    private deltaFrames;
-    private deltaCanvas;
-    private deltaCtx;
+    private framePixelData;
+    private frameWidth;
+    private frameHeight;
     private sogWidth;
     private sogHeight;
     private sogTileData;
+    private posEncodeBuf;
     constructor(metadata: Delta4DGSMetadata);
     loadDeltaFrames(webpBlob: Blob): Promise<void>;
+    /**
+     * Get pixel value from pre-decoded frame data.
+     */
+    private _getPixel;
     /**
      * Process a single frame: decode births, update positions, assemble SOG texture.
      * Returns { data: Uint8Array, count: number }
@@ -71,7 +79,7 @@ export declare class DeltaSplatDecoder {
     private _processOneFrame;
     private _decodeBirths;
     private _assembleSogTexture;
-    private _encodePosition;
+    private _encodePositionInPlace;
     getTotalFrames(): number;
     getSOGDimensions(): {
         width: number;

@@ -96,9 +96,10 @@ export class DeltaSplatMesh extends SplatMesh {
     this.decoder = new DeltaSplatDecoder(metadata);
     await this.decoder.loadDeltaFrames(webpBlob);
 
-    const tileSize = metadata.tile_size;
     const { width: sogWidth, height: sogHeight } =
       this.decoder.getSOGDimensions();
+    // SOG tile size derived from dimensions (3x2 grid)
+    const sogTileSize = sogWidth / 3;
 
     // Initialize GPU video mode on PackedSplats
     const sparkMetadata: SOGVideoMetadata = {
@@ -108,38 +109,38 @@ export class DeltaSplatMesh extends SplatMesh {
       scaleCodebook: metadata.sog.scales.codebook,
       sh0Codebook: metadata.sog.sh0.codebook,
     };
-    this.packedSplats.initVideoModeGPU(sparkMetadata, tileSize);
+    this.packedSplats.initVideoModeGPU(sparkMetadata, sogTileSize);
 
     // Calculate 3x2 tile UVs for reconstructed SOG
     this.tileUVs = {
       means_l: {
         u0: 0,
         v0: 0,
-        u1: tileSize / sogWidth,
-        v1: tileSize / sogHeight,
+        u1: sogTileSize / sogWidth,
+        v1: sogTileSize / sogHeight,
       },
       means_u: {
-        u0: tileSize / sogWidth,
+        u0: sogTileSize / sogWidth,
         v0: 0,
-        u1: (2 * tileSize) / sogWidth,
-        v1: tileSize / sogHeight,
+        u1: (2 * sogTileSize) / sogWidth,
+        v1: sogTileSize / sogHeight,
       },
       quats: {
-        u0: (2 * tileSize) / sogWidth,
+        u0: (2 * sogTileSize) / sogWidth,
         v0: 0,
         u1: 1,
-        v1: tileSize / sogHeight,
+        v1: sogTileSize / sogHeight,
       },
       scales: {
         u0: 0,
-        v0: tileSize / sogHeight,
-        u1: tileSize / sogWidth,
+        v0: sogTileSize / sogHeight,
+        u1: sogTileSize / sogWidth,
         v1: 1,
       },
       sh0: {
-        u0: tileSize / sogWidth,
-        v0: tileSize / sogHeight,
-        u1: (2 * tileSize) / sogWidth,
+        u0: sogTileSize / sogWidth,
+        v0: sogTileSize / sogHeight,
+        u1: (2 * sogTileSize) / sogWidth,
         v1: 1,
       },
     };
@@ -152,7 +153,7 @@ export class DeltaSplatMesh extends SplatMesh {
     this.frameTexture.minFilter = THREE.NearestFilter;
     this.frameTexture.magFilter = THREE.NearestFilter;
     this.frameTexture.generateMipmaps = false;
-    this.frameTexture.colorSpace = THREE.LinearSRGBColorSpace;
+    this.frameTexture.colorSpace = THREE.NoColorSpace;
 
     this.frameInterval = 1000 / metadata.video.fps;
 
@@ -290,17 +291,26 @@ export class DeltaSplatMesh extends SplatMesh {
     return this.metadata?.video?.fps || 30;
   }
 
-  // Stub methods for API compatibility with VideoSplatMesh
-  // Delta encoding applies transforms at encode time
+  // Current quaternion transform mode
+  private quatTransformMode = 0;
 
-  setQuatTransformMode(_mode: number): void {
-    // Delta encoding applies quat transform at encode time
-    // GPU decode should use identity (mode 0)
-    console.log("Delta encoding: quat transform applied at encode time");
+  /**
+   * Set quaternion transform mode for debugging orientation issues.
+   * Even though delta encoding applies Y180 at encode time, we may need
+   * additional transforms to match the coordinate system.
+   */
+  setQuatTransformMode(mode: number): void {
+    this.quatTransformMode = mode;
+    // Update the uniform in the GPU video mode material
+    // biome-ignore lint/suspicious/noExplicitAny: accessing private gpuVideoModeData
+    const gpuData = (this.packedSplats as any).gpuVideoModeData;
+    if (gpuData?.material?.uniforms?.quatTransformMode) {
+      gpuData.material.uniforms.quatTransformMode.value = mode;
+    }
   }
 
   getQuatTransformMode(): number {
-    return 0;
+    return this.quatTransformMode;
   }
 
   setMaxScaleFilter(_maxScale: number): void {

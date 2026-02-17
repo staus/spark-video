@@ -61,7 +61,13 @@ export declare class DeltaSplatMesh extends SplatMesh {
     toggle(): void;
     getTotalFrames(): number;
     getFPS(): number;
-    setQuatTransformMode(_mode: number): void;
+    private quatTransformMode;
+    /**
+     * Set quaternion transform mode for debugging orientation issues.
+     * Even though delta encoding applies Y180 at encode time, we may need
+     * additional transforms to match the coordinate system.
+     */
+    setQuatTransformMode(mode: number): void;
     getQuatTransformMode(): number;
     setMaxScaleFilter(_maxScale: number): void;
     getMaxScaleFilter(): number;

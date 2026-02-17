@@ -12429,23 +12429,20 @@ class DeltaSplatDecoder {
     }
     this.activeCount = 0;
     this.currentFrameIndex = 0;
-    this.deltaFrames = [];
-    this.deltaCanvas = new OffscreenCanvas(
-      this.tileSize * metadata.grid[0],
-      this.tileSize * metadata.grid[1]
-    );
-    const ctx = this.deltaCanvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) {
-      throw new Error("Failed to get 2D context for delta canvas");
-    }
-    this.deltaCtx = ctx;
-    const sogWidth = this.tileSize * 3;
-    const sogHeight = this.tileSize * 2;
+    this.frameWidth = this.tileSize * metadata.grid[0];
+    this.frameHeight = this.tileSize * metadata.grid[1];
+    this.framePixelData = [];
+    const sogTileSide = Math.ceil(Math.sqrt(maxActive));
+    const sogTileSizePower = Math.ceil(Math.log2(Math.max(sogTileSide, 1)));
+    this.sogTileSize = 2 ** sogTileSizePower;
+    const sogWidth = this.sogTileSize * 3;
+    const sogHeight = this.sogTileSize * 2;
     this.sogWidth = sogWidth;
     this.sogHeight = sogHeight;
     this.sogTileData = new Uint8Array(sogWidth * sogHeight * 4);
+    this.posEncodeBuf = new Uint8Array(6);
     console.log(
-      `DeltaSplatDecoder initialized: maxActive=${maxActive}, tileSize=${this.tileSize}`
+      `DeltaSplatDecoder initialized: maxActive=${maxActive}, deltaTile=${this.tileSize}, sogTile=${this.sogTileSize}`
     );
   }
   async loadDeltaFrames(webpBlob) {
@@ -12454,19 +12451,66 @@ class DeltaSplatDecoder {
     const decoder = new ImageDecoder({ data: arrayBuffer, type: "image/webp" });
     await decoder.tracks.ready;
     const frameCount = ((_a2 = decoder.tracks.selectedTrack) == null ? void 0 : _a2.frameCount) || this.metadata.video.frames;
-    this.deltaFrames = [];
+    this.framePixelData = [];
+    const canvas = new OffscreenCanvas(this.frameWidth, this.frameHeight);
+    const ctx = canvas.getContext("2d", {
+      willReadFrequently: true,
+      colorSpace: "srgb"
+    });
+    if (!ctx) {
+      throw new Error("Failed to get 2D context");
+    }
     console.log(`Decoding ${frameCount} delta frames...`);
+    console.log(`Frame dimensions: ${this.frameWidth}x${this.frameHeight}`);
     for (let i = 0; i < frameCount; i++) {
       const result = await decoder.decode({ frameIndex: i });
-      const bitmap = await createImageBitmap(result.image, {
+      const frame = result.image;
+      const bitmap = await createImageBitmap(frame, {
         premultiplyAlpha: "none",
         colorSpaceConversion: "none"
       });
-      this.deltaFrames.push(bitmap);
-      result.image.close();
+      ctx.drawImage(bitmap, 0, 0);
+      const imageData = ctx.getImageData(
+        0,
+        0,
+        this.frameWidth,
+        this.frameHeight,
+        {
+          colorSpace: "srgb"
+        }
+      );
+      this.framePixelData.push(imageData.data);
+      bitmap.close();
+      frame.close();
+      if (i === 0) {
+        const d = imageData.data;
+        console.log(
+          `Frame 0 first pixel: R=${d[0]} G=${d[1]} B=${d[2]} A=${d[3]}`
+        );
+        console.log(
+          `Birth count for frame 0: ${this.metadata["4dgs"].birth_counts[0]}`
+        );
+      }
     }
     decoder.close();
-    console.log(`Decoded ${this.deltaFrames.length} delta frames`);
+    console.log(`Decoded ${this.framePixelData.length} delta frames`);
+    const totalBirths = this.metadata["4dgs"].birth_counts.reduce(
+      (a, b) => a + b,
+      0
+    );
+    console.log(`Total births across all frames: ${totalBirths}`);
+  }
+  /**
+   * Get pixel value from pre-decoded frame data.
+   */
+  _getPixel(frameData, x, y) {
+    const idx = (y * this.frameWidth + x) * 4;
+    return [
+      frameData[idx],
+      frameData[idx + 1],
+      frameData[idx + 2],
+      frameData[idx + 3]
+    ];
   }
   /**
    * Process a single frame: decode births, update positions, assemble SOG texture.
@@ -12521,76 +12565,108 @@ class DeltaSplatDecoder {
         this.activeCount--;
       }
     }
+    if (frameIndex % 10 === 0) {
+      console.log(
+        `Frame ${frameIndex}: ${births.length} births, ${this.activeCount} active`
+      );
+    }
   }
   _decodeBirths(frameIndex) {
     const birthCount = this.metadata["4dgs"].birth_counts[frameIndex];
     if (birthCount === 0) return [];
-    const frame = this.deltaFrames[frameIndex];
-    this.deltaCtx.drawImage(frame, 0, 0);
+    const frameData = this.framePixelData[frameIndex];
     const births = [];
     const layout = this.metadata.layout;
     const ts = this.tileSize;
-    const readTile = (col, row) => {
-      const x = col * ts;
-      const y = row * ts;
-      return this.deltaCtx.getImageData(x, y, ts, ts).data;
-    };
-    const meansL = readTile(layout.means_l[0], layout.means_l[1]);
-    const meansU = readTile(layout.means_u[0], layout.means_u[1]);
-    const quats = readTile(layout.quats[0], layout.quats[1]);
-    const motionL = readTile(layout.motion_l[0], layout.motion_l[1]);
-    const scales = readTile(layout.scales[0], layout.scales[1]);
-    const sh0 = readTile(layout.sh0[0], layout.sh0[1]);
-    const motionU = readTile(layout.motion_u[0], layout.motion_u[1]);
-    const meta = readTile(layout.meta[0], layout.meta[1]);
+    const meansLOff = [layout.means_l[0] * ts, layout.means_l[1] * ts];
+    const meansUOff = [layout.means_u[0] * ts, layout.means_u[1] * ts];
+    const quatsOff = [layout.quats[0] * ts, layout.quats[1] * ts];
+    const motionLOff = [layout.motion_l[0] * ts, layout.motion_l[1] * ts];
+    const scalesOff = [layout.scales[0] * ts, layout.scales[1] * ts];
+    const sh0Off = [layout.sh0[0] * ts, layout.sh0[1] * ts];
+    const motionUOff = [layout.motion_u[0] * ts, layout.motion_u[1] * ts];
+    const metaOff = [layout.meta[0] * ts, layout.meta[1] * ts];
     for (let i = 0; i < birthCount; i++) {
-      const p = i * 4;
-      const posU16X = meansL[p] + meansU[p] * 256;
-      const posU16Y = meansL[p + 1] + meansU[p + 1] * 256;
-      const posU16Z = meansL[p + 2] + meansU[p + 2] * 256;
-      const posLog = new Float32Array([
-        this.posMins[0] + posU16X / 65535 * this.posRange[0],
-        this.posMins[1] + posU16Y / 65535 * this.posRange[1],
-        this.posMins[2] + posU16Z / 65535 * this.posRange[2]
-      ]);
+      const col = i % ts;
+      const row = Math.floor(i / ts);
+      const meansL = this._getPixel(
+        frameData,
+        meansLOff[0] + col,
+        meansLOff[1] + row
+      );
+      const meansU = this._getPixel(
+        frameData,
+        meansUOff[0] + col,
+        meansUOff[1] + row
+      );
+      const quats = this._getPixel(
+        frameData,
+        quatsOff[0] + col,
+        quatsOff[1] + row
+      );
+      const motionL = this._getPixel(
+        frameData,
+        motionLOff[0] + col,
+        motionLOff[1] + row
+      );
+      const scales = this._getPixel(
+        frameData,
+        scalesOff[0] + col,
+        scalesOff[1] + row
+      );
+      const sh0 = this._getPixel(frameData, sh0Off[0] + col, sh0Off[1] + row);
+      const motionU = this._getPixel(
+        frameData,
+        motionUOff[0] + col,
+        motionUOff[1] + row
+      );
+      const meta = this._getPixel(
+        frameData,
+        metaOff[0] + col,
+        metaOff[1] + row
+      );
+      const posU16X = meansL[0] + meansU[0] * 256;
+      const posU16Y = meansL[1] + meansU[1] * 256;
+      const posU16Z = meansL[2] + meansU[2] * 256;
+      const posLogX = this.posMins[0] + posU16X / 65535 * this.posRange[0];
+      const posLogY = this.posMins[1] + posU16Y / 65535 * this.posRange[1];
+      const posLogZ = this.posMins[2] + posU16Z / 65535 * this.posRange[2];
       const position = new Float32Array([
-        Math.sign(posLog[0]) * (Math.exp(Math.abs(posLog[0])) - 1),
-        Math.sign(posLog[1]) * (Math.exp(Math.abs(posLog[1])) - 1),
-        Math.sign(posLog[2]) * (Math.exp(Math.abs(posLog[2])) - 1)
+        Math.sign(posLogX) * (Math.exp(Math.abs(posLogX)) - 1),
+        Math.sign(posLogY) * (Math.exp(Math.abs(posLogY)) - 1),
+        Math.sign(posLogZ) * (Math.exp(Math.abs(posLogZ)) - 1)
       ]);
-      const motU16X = motionL[p] + motionU[p] * 256;
-      const motU16Y = motionL[p + 1] + motionU[p + 1] * 256;
-      const motU16Z = motionL[p + 2] + motionU[p + 2] * 256;
-      const motLog = new Float32Array([
-        this.motionMins[0] + motU16X / 65535 * this.motionRange[0],
-        this.motionMins[1] + motU16Y / 65535 * this.motionRange[1],
-        this.motionMins[2] + motU16Z / 65535 * this.motionRange[2]
-      ]);
+      const motU16X = motionL[0] + motionU[0] * 256;
+      const motU16Y = motionL[1] + motionU[1] * 256;
+      const motU16Z = motionL[2] + motionU[2] * 256;
+      const motLogX = this.motionMins[0] + motU16X / 65535 * this.motionRange[0];
+      const motLogY = this.motionMins[1] + motU16Y / 65535 * this.motionRange[1];
+      const motLogZ = this.motionMins[2] + motU16Z / 65535 * this.motionRange[2];
       const motion = new Float32Array([
-        Math.sign(motLog[0]) * (Math.exp(Math.abs(motLog[0])) - 1),
-        Math.sign(motLog[1]) * (Math.exp(Math.abs(motLog[1])) - 1),
-        Math.sign(motLog[2]) * (Math.exp(Math.abs(motLog[2])) - 1)
+        Math.sign(motLogX) * (Math.exp(Math.abs(motLogX)) - 1),
+        Math.sign(motLogY) * (Math.exp(Math.abs(motLogY)) - 1),
+        Math.sign(motLogZ) * (Math.exp(Math.abs(motLogZ)) - 1)
       ]);
-      const lifetime = meta[p] + meta[p + 1] * 256;
+      const rawLifetime = meta[0] + meta[1] * 256;
+      const maxLifetime = this.framePixelData.length - frameIndex;
+      const lifetime = Math.min(rawLifetime, maxLifetime);
+      if (frameIndex === 0 && i === 0) {
+        console.log(
+          `First birth: pos=(${position[0].toFixed(3)}, ${position[1].toFixed(3)}, ${position[2].toFixed(3)})`
+        );
+        console.log(
+          `  lifetime=${lifetime}, quats=[${quats.join(",")}], scales=[${scales.join(",")}]`
+        );
+      }
       births.push({
-        quatsEncoded: new Uint8Array([
-          quats[p],
-          quats[p + 1],
-          quats[p + 2],
-          quats[p + 3]
-        ]),
+        quatsEncoded: new Uint8Array([quats[0], quats[1], quats[2], quats[3]]),
         scalesEncoded: new Uint8Array([
-          scales[p],
-          scales[p + 1],
-          scales[p + 2],
-          scales[p + 3]
+          scales[0],
+          scales[1],
+          scales[2],
+          scales[3]
         ]),
-        sh0Encoded: new Uint8Array([
-          sh0[p],
-          sh0[p + 1],
-          sh0[p + 2],
-          sh0[p + 3]
-        ]),
+        sh0Encoded: new Uint8Array([sh0[0], sh0[1], sh0[2], sh0[3]]),
         position,
         motion,
         remainingFrames: lifetime,
@@ -12601,7 +12677,7 @@ class DeltaSplatDecoder {
     return births;
   }
   _assembleSogTexture() {
-    const ts = this.tileSize;
+    const ts = this.sogTileSize;
     const sogWidth = this.sogWidth;
     this.sogTileData.fill(0);
     for (let i = 3; i < this.sogTileData.length; i += 4) {
@@ -12612,16 +12688,16 @@ class DeltaSplatDecoder {
       if (!g) continue;
       const row = Math.floor(idx / ts);
       const col = idx % ts;
-      const posEncoded = this._encodePosition(g.position);
+      this._encodePositionInPlace(g.position, this.posEncodeBuf);
       const meansLBase = (row * sogWidth + col) * 4;
-      this.sogTileData[meansLBase] = posEncoded[0];
-      this.sogTileData[meansLBase + 1] = posEncoded[1];
-      this.sogTileData[meansLBase + 2] = posEncoded[2];
+      this.sogTileData[meansLBase] = this.posEncodeBuf[0];
+      this.sogTileData[meansLBase + 1] = this.posEncodeBuf[1];
+      this.sogTileData[meansLBase + 2] = this.posEncodeBuf[2];
       this.sogTileData[meansLBase + 3] = 255;
       const meansUBase = (row * sogWidth + ts + col) * 4;
-      this.sogTileData[meansUBase] = posEncoded[3];
-      this.sogTileData[meansUBase + 1] = posEncoded[4];
-      this.sogTileData[meansUBase + 2] = posEncoded[5];
+      this.sogTileData[meansUBase] = this.posEncodeBuf[3];
+      this.sogTileData[meansUBase + 1] = this.posEncodeBuf[4];
+      this.sogTileData[meansUBase + 2] = this.posEncodeBuf[5];
       this.sogTileData[meansUBase + 3] = 255;
       const quatsBase = (row * sogWidth + ts * 2 + col) * 4;
       this.sogTileData.set(g.quatsEncoded, quatsBase);
@@ -12632,7 +12708,7 @@ class DeltaSplatDecoder {
       idx++;
     }
   }
-  _encodePosition(pos) {
+  _encodePositionInPlace(pos, out) {
     const logX = Math.sign(pos[0]) * Math.log1p(Math.abs(pos[0]));
     const logY = Math.sign(pos[1]) * Math.log1p(Math.abs(pos[1]));
     const logZ = Math.sign(pos[2]) * Math.log1p(Math.abs(pos[2]));
@@ -12642,19 +12718,15 @@ class DeltaSplatDecoder {
     const u16X = Math.round(Math.max(0, Math.min(65535, normX * 65535)));
     const u16Y = Math.round(Math.max(0, Math.min(65535, normY * 65535)));
     const u16Z = Math.round(Math.max(0, Math.min(65535, normZ * 65535)));
-    return new Uint8Array([
-      u16X & 255,
-      u16Y & 255,
-      u16Z & 255,
-      // low bytes
-      u16X >> 8,
-      u16Y >> 8,
-      u16Z >> 8
-      // high bytes
-    ]);
+    out[0] = u16X & 255;
+    out[1] = u16Y & 255;
+    out[2] = u16Z & 255;
+    out[3] = u16X >> 8;
+    out[4] = u16Y >> 8;
+    out[5] = u16Z >> 8;
   }
   getTotalFrames() {
-    return this.deltaFrames.length;
+    return this.framePixelData.length;
   }
   getSOGDimensions() {
     return { width: this.sogWidth, height: this.sogHeight };
@@ -12672,6 +12744,7 @@ const _DeltaSplatMesh = class _DeltaSplatMesh extends SplatMesh {
     this.lastFrameTime = 0;
     this.frameInterval = 1e3 / 30;
     this.onFrameChange = null;
+    this.quatTransformMode = 0;
   }
   /**
    * Check if ImageDecoder API is available
@@ -12687,8 +12760,8 @@ const _DeltaSplatMesh = class _DeltaSplatMesh extends SplatMesh {
     this.metadata = metadata;
     this.decoder = new DeltaSplatDecoder(metadata);
     await this.decoder.loadDeltaFrames(webpBlob);
-    const tileSize = metadata.tile_size;
     const { width: sogWidth, height: sogHeight } = this.decoder.getSOGDimensions();
+    const sogTileSize = sogWidth / 3;
     const sparkMetadata = {
       count: metadata["4dgs"].max_active_gaussians,
       mins: metadata.sog.means.mins,
@@ -12696,36 +12769,36 @@ const _DeltaSplatMesh = class _DeltaSplatMesh extends SplatMesh {
       scaleCodebook: metadata.sog.scales.codebook,
       sh0Codebook: metadata.sog.sh0.codebook
     };
-    this.packedSplats.initVideoModeGPU(sparkMetadata, tileSize);
+    this.packedSplats.initVideoModeGPU(sparkMetadata, sogTileSize);
     this.tileUVs = {
       means_l: {
         u0: 0,
         v0: 0,
-        u1: tileSize / sogWidth,
-        v1: tileSize / sogHeight
+        u1: sogTileSize / sogWidth,
+        v1: sogTileSize / sogHeight
       },
       means_u: {
-        u0: tileSize / sogWidth,
+        u0: sogTileSize / sogWidth,
         v0: 0,
-        u1: 2 * tileSize / sogWidth,
-        v1: tileSize / sogHeight
+        u1: 2 * sogTileSize / sogWidth,
+        v1: sogTileSize / sogHeight
       },
       quats: {
-        u0: 2 * tileSize / sogWidth,
+        u0: 2 * sogTileSize / sogWidth,
         v0: 0,
         u1: 1,
-        v1: tileSize / sogHeight
+        v1: sogTileSize / sogHeight
       },
       scales: {
         u0: 0,
-        v0: tileSize / sogHeight,
-        u1: tileSize / sogWidth,
+        v0: sogTileSize / sogHeight,
+        u1: sogTileSize / sogWidth,
         v1: 1
       },
       sh0: {
-        u0: tileSize / sogWidth,
-        v0: tileSize / sogHeight,
-        u1: 2 * tileSize / sogWidth,
+        u0: sogTileSize / sogWidth,
+        v0: sogTileSize / sogHeight,
+        u1: 2 * sogTileSize / sogWidth,
         v1: 1
       }
     };
@@ -12736,7 +12809,7 @@ const _DeltaSplatMesh = class _DeltaSplatMesh extends SplatMesh {
     this.frameTexture.minFilter = THREE.NearestFilter;
     this.frameTexture.magFilter = THREE.NearestFilter;
     this.frameTexture.generateMipmaps = false;
-    this.frameTexture.colorSpace = THREE.LinearSRGBColorSpace;
+    this.frameTexture.colorSpace = THREE.NoColorSpace;
     this.frameInterval = 1e3 / metadata.video.fps;
     const loadTime = performance.now() - loadStart;
     console.log(
@@ -12824,13 +12897,21 @@ const _DeltaSplatMesh = class _DeltaSplatMesh extends SplatMesh {
     var _a2, _b2;
     return ((_b2 = (_a2 = this.metadata) == null ? void 0 : _a2.video) == null ? void 0 : _b2.fps) || 30;
   }
-  // Stub methods for API compatibility with VideoSplatMesh
-  // Delta encoding applies transforms at encode time
-  setQuatTransformMode(_mode) {
-    console.log("Delta encoding: quat transform applied at encode time");
+  /**
+   * Set quaternion transform mode for debugging orientation issues.
+   * Even though delta encoding applies Y180 at encode time, we may need
+   * additional transforms to match the coordinate system.
+   */
+  setQuatTransformMode(mode) {
+    var _a2, _b2;
+    this.quatTransformMode = mode;
+    const gpuData = this.packedSplats.gpuVideoModeData;
+    if ((_b2 = (_a2 = gpuData == null ? void 0 : gpuData.material) == null ? void 0 : _a2.uniforms) == null ? void 0 : _b2.quatTransformMode) {
+      gpuData.material.uniforms.quatTransformMode.value = mode;
+    }
   }
   getQuatTransformMode() {
-    return 0;
+    return this.quatTransformMode;
   }
   setMaxScaleFilter(_maxScale) {
   }
