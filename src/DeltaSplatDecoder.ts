@@ -471,7 +471,7 @@ export class DeltaSplatDecoder {
       g.remainingFrames--;
 
       // Free expired gaussians
-      if (g.remainingFrames <= 0) {
+      if (g.remainingFrames < 0) {
         this.activeGaussians[slot] = null;
         this.freeSlots.push(slot);
         this.activeCount--;
