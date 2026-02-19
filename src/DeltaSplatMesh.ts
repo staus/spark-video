@@ -288,6 +288,7 @@ export class DeltaSplatMesh extends SplatMesh {
 
   // Current quaternion transform mode
   private quatTransformMode = 0;
+  private maxScaleFilter = 0;
 
   /**
    * Set quaternion transform mode for debugging orientation issues.
@@ -318,12 +319,34 @@ export class DeltaSplatMesh extends SplatMesh {
     return this.quatTransformMode;
   }
 
-  setMaxScaleFilter(_maxScale: number): void {
-    // Not implemented for delta encoding
+  setMaxScaleFilter(maxScale: number): void {
+    this.maxScaleFilter = maxScale;
+    this.packedSplats.setDeltaMaxScaleFilter(maxScale);
   }
 
   getMaxScaleFilter(): number {
-    return 0;
+    return this.maxScaleFilter ?? 0;
+  }
+
+  /**
+   * Re-run the GPU decode pass on existing texture data.
+   * Use after updating uniforms (e.g. maxScaleFilter) to apply changes
+   * without re-processing delta frames.
+   */
+  redecodeGPU(renderer: THREE.WebGLRenderer): void {
+    if (!this.positionTexture || !this.attributeTexture) return;
+
+    this.positionTexture.needsUpdate = true;
+    this.attributeTexture.needsUpdate = true;
+
+    this.packedSplats.updateFromDeltaTextureGPU(
+      renderer,
+      this.positionTexture,
+      this.attributeTexture,
+      this.numSplats,
+    );
+
+    this.updateVersion();
   }
 
   setStaticVizMode(_enabled: boolean): void {

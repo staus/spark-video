@@ -62,14 +62,21 @@ export declare class DeltaSplatMesh extends SplatMesh {
     getTotalFrames(): number;
     getFPS(): number;
     private quatTransformMode;
+    private maxScaleFilter;
     /**
      * Set quaternion transform mode for debugging orientation issues.
      * The transform is applied in the render shader for instant updates.
      */
     setQuatTransformMode(mode: number): void;
     getQuatTransformMode(): number;
-    setMaxScaleFilter(_maxScale: number): void;
+    setMaxScaleFilter(maxScale: number): void;
     getMaxScaleFilter(): number;
+    /**
+     * Re-run the GPU decode pass on existing texture data.
+     * Use after updating uniforms (e.g. maxScaleFilter) to apply changes
+     * without re-processing delta frames.
+     */
+    redecodeGPU(renderer: THREE.WebGLRenderer): void;
     setStaticVizMode(_enabled: boolean): void;
     getStaticVizMode(): boolean;
     setStaticThreshold(_threshold: number): void;
