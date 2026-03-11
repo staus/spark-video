@@ -7,6 +7,8 @@
  * Uses canvas 2D with careful color space handling to read raw pixel data.
  */
 
+import { unzipSync } from "fflate";
+
 // WebCodecs API types (not yet complete in lib.dom.d.ts)
 interface ImageDecoderInit {
   data: ArrayBuffer | ArrayBufferView;
@@ -878,5 +880,55 @@ export class DeltaSplatDecoder {
 
   getSOGDimensions(): { width: number; height: number } {
     return { width: this.sogWidth, height: this.sogHeight };
+  }
+
+  /**
+   * Load a .4dgs bundle file and extract its contents.
+   * The bundle is a ZIP file containing video.webp, metadata.json, and keyframe files.
+   */
+  static async loadFromBundle(bundleBlob: Blob): Promise<{
+    videoBlob: Blob;
+    metadata: Delta4DGSMetadata;
+    keyframeBlobs: Map<number, Blob>;
+  }> {
+    const buffer = await bundleBlob.arrayBuffer();
+    const unzipped = unzipSync(new Uint8Array(buffer));
+
+    // Extract metadata
+    const metadataBytes = unzipped["metadata.json"];
+    if (!metadataBytes) {
+      throw new Error("Bundle missing metadata.json");
+    }
+    const metadataJson = new TextDecoder().decode(metadataBytes);
+    const metadata = JSON.parse(metadataJson) as Delta4DGSMetadata;
+
+    // Extract video
+    const videoBytes = unzipped["video.webp"];
+    if (!videoBytes) {
+      throw new Error("Bundle missing video.webp");
+    }
+    const videoBlob = new Blob([videoBytes], { type: "image/webp" });
+
+    // Extract keyframes
+    const keyframeBlobs = new Map<number, Blob>();
+    if (metadata.keyframes) {
+      for (const kf of metadata.keyframes) {
+        const filename = kf.path;
+        const kfBytes = unzipped[filename];
+        if (kfBytes) {
+          keyframeBlobs.set(
+            kf.frame_index,
+            new Blob([kfBytes], { type: "image/webp" }),
+          );
+        } else {
+          console.warn(`Bundle missing keyframe: ${filename}`);
+        }
+      }
+    }
+
+    console.log(
+      `Loaded bundle: ${metadata.video.frames} video frames, ${keyframeBlobs.size} keyframes`,
+    );
+    return { videoBlob, metadata, keyframeBlobs };
   }
 }

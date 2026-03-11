@@ -145,4 +145,13 @@ export declare class DeltaSplatDecoder {
         width: number;
         height: number;
     };
+    /**
+     * Load a .4dgs bundle file and extract its contents.
+     * The bundle is a ZIP file containing video.webp, metadata.json, and keyframe files.
+     */
+    static loadFromBundle(bundleBlob: Blob): Promise<{
+        videoBlob: Blob;
+        metadata: Delta4DGSMetadata;
+        keyframeBlobs: Map<number, Blob>;
+    }>;
 }
