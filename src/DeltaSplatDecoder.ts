@@ -37,6 +37,16 @@ declare const ImageDecoder: {
 };
 
 /**
+ * Keyframe metadata - frames extracted separately from the video stream
+ */
+export interface KeyframeInfo {
+  frame_index: number;
+  path: string;
+  tile_size: number;
+  birth_count: number;
+}
+
+/**
  * Metadata format for delta-encoded 4DGS video files (JSON sidecar)
  */
 export interface Delta4DGSMetadata {
@@ -46,6 +56,8 @@ export interface Delta4DGSMetadata {
   video: {
     frames: number;
     fps: number;
+    start_frame?: number; // First frame index in video (after keyframes)
+    frame_map?: number[]; // Maps video frame index to original frame index
   };
   sog: {
     means: {
@@ -66,8 +78,10 @@ export interface Delta4DGSMetadata {
   "4dgs": {
     max_active_gaussians: number;
     birth_counts: number[];
+    total_frames?: number; // Total frames including keyframes
   };
   encoding: "delta";
+  keyframes?: KeyframeInfo[]; // Separate keyframe images
 }
 
 interface ActiveGaussian {
@@ -100,10 +114,16 @@ export class DeltaSplatDecoder {
   private activeCount: number;
   currentFrameIndex: number;
 
-  // Store raw pixel data for each frame (pre-decoded at load time)
+  // Store raw pixel data for each video frame (pre-decoded at load time)
   private framePixelData: Uint8ClampedArray[];
   private frameWidth: number;
   private frameHeight: number;
+
+  // Keyframe support: separate images with potentially different tile sizes
+  private keyframeData: Map<number, Uint8ClampedArray>; // frameIndex -> pixel data
+  private keyframeTileSizes: Map<number, number>; // frameIndex -> tile_size
+  private keyframeIndices: Set<number>; // Set of frame indices that are keyframes
+  private totalFrames: number; // Total frames including keyframes
 
   // SOG output: 3x2 tiles (standard SOG layout for GPU decode)
   private sogWidth: number;
@@ -158,6 +178,23 @@ export class DeltaSplatDecoder {
     // Pre-decoded frame pixel data (filled during loadDeltaFrames)
     this.framePixelData = [];
 
+    // Initialize keyframe support
+    this.keyframeData = new Map();
+    this.keyframeTileSizes = new Map();
+    this.keyframeIndices = new Set();
+    this.totalFrames = metadata["4dgs"].total_frames ?? metadata.video.frames;
+
+    // Register keyframes from metadata
+    if (metadata.keyframes) {
+      for (const kf of metadata.keyframes) {
+        this.keyframeIndices.add(kf.frame_index);
+        this.keyframeTileSizes.set(kf.frame_index, kf.tile_size);
+      }
+      console.log(
+        `Keyframes registered: ${metadata.keyframes.length} (indices: ${Array.from(this.keyframeIndices).join(", ")})`,
+      );
+    }
+
     // SOG output tile size: based on max_active, not delta frame tile_size
     const sogTileSide = Math.ceil(Math.sqrt(maxActive));
     const sogTileSizePower = Math.ceil(Math.log2(Math.max(sogTileSide, 1)));
@@ -195,6 +232,9 @@ export class DeltaSplatDecoder {
     console.log(
       `GPU buffers: position=${this.gpuPositionBuffer.length} floats (${this.gpuTextureSize}x${this.gpuTextureSize}), ` +
         `attributes=${this.gpuAttributeBuffer.length} bytes (${this.gpuTextureSize}x${this.gpuTextureSize * 3})`,
+    );
+    console.log(
+      `Total frames: ${this.totalFrames}, Video frames: ${metadata.video.frames}, Keyframes: ${this.keyframeIndices.size}`,
     );
   }
 
@@ -285,14 +325,81 @@ export class DeltaSplatDecoder {
   }
 
   /**
+   * Load keyframe PNG images.
+   * Call this after loadDeltaFrames() if metadata contains keyframes.
+   *
+   * @param baseUrl Base URL for fetching keyframe files (directory containing the JSON)
+   */
+  async loadKeyframes(baseUrl: string): Promise<void> {
+    if (!this.metadata.keyframes || this.metadata.keyframes.length === 0) {
+      console.log("No keyframes to load");
+      return;
+    }
+
+    console.log(`Loading ${this.metadata.keyframes.length} keyframe(s)...`);
+
+    for (const kf of this.metadata.keyframes) {
+      const url = baseUrl + "/" + kf.path;
+      console.log(`  Loading keyframe ${kf.frame_index}: ${url}`);
+
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        const blob = await response.blob();
+
+        // Decode PNG to ImageBitmap with settings to preserve raw data
+        const bitmap = await createImageBitmap(blob, {
+          premultiplyAlpha: "none",
+          colorSpaceConversion: "none",
+        });
+
+        // Draw to canvas to get raw pixel data
+        const kfTileSize = kf.tile_size;
+        const kfWidth = kfTileSize * this.metadata.grid[0];
+        const kfHeight = kfTileSize * this.metadata.grid[1];
+
+        const canvas = new OffscreenCanvas(kfWidth, kfHeight);
+        const ctx = canvas.getContext("2d", {
+          willReadFrequently: true,
+        });
+        if (!ctx) {
+          throw new Error("Failed to get 2D context for keyframe canvas");
+        }
+
+        ctx.drawImage(bitmap, 0, 0);
+        const imageData = ctx.getImageData(0, 0, kfWidth, kfHeight);
+
+        this.keyframeData.set(kf.frame_index, imageData.data);
+
+        console.log(
+          `  Keyframe ${kf.frame_index}: ${kfWidth}x${kfHeight}, tile_size=${kfTileSize}, births=${kf.birth_count}`,
+        );
+      } catch (error) {
+        console.error(`Failed to load keyframe ${kf.frame_index}:`, error);
+        throw error;
+      }
+    }
+
+    console.log(`Loaded ${this.keyframeData.size} keyframe(s)`);
+  }
+
+  /**
    * Get pixel value from pre-decoded frame data.
+   * @param frameData Raw pixel data
+   * @param x X coordinate
+   * @param y Y coordinate
+   * @param width Frame width (optional, defaults to this.frameWidth)
    */
   private _getPixel(
     frameData: Uint8ClampedArray,
     x: number,
     y: number,
+    width?: number,
   ): [number, number, number, number] {
-    const idx = (y * this.frameWidth + x) * 4;
+    const w = width ?? this.frameWidth;
+    const idx = (y * w + x) * 4;
     return [
       frameData[idx],
       frameData[idx + 1],
@@ -496,10 +603,53 @@ export class DeltaSplatDecoder {
     const birthCount = this.metadata["4dgs"].birth_counts[frameIndex];
     if (birthCount === 0) return [];
 
-    const frameData = this.framePixelData[frameIndex];
+    // Determine if this is a keyframe or video frame
+    const isKeyframe = this.keyframeIndices.has(frameIndex);
+    let frameData: Uint8ClampedArray;
+    let ts: number;
+    let frameWidth: number;
+
+    if (isKeyframe) {
+      // Use keyframe data with its own tile size
+      const kfData = this.keyframeData.get(frameIndex);
+      if (!kfData) {
+        console.warn(`Keyframe ${frameIndex} not loaded`);
+        return [];
+      }
+      frameData = kfData;
+      ts = this.keyframeTileSizes.get(frameIndex) ?? this.tileSize;
+      frameWidth = ts * this.metadata.grid[0];
+    } else {
+      // Map original frame index to video frame index
+      const frameMap = this.metadata.video.frame_map;
+      let videoFrameIndex: number;
+      if (frameMap) {
+        videoFrameIndex = frameMap.indexOf(frameIndex);
+        if (videoFrameIndex === -1) {
+          console.warn(
+            `Frame ${frameIndex} not found in frame_map, using direct index`,
+          );
+          videoFrameIndex = frameIndex;
+        }
+      } else {
+        // No keyframes, direct mapping
+        videoFrameIndex = frameIndex;
+      }
+
+      if (videoFrameIndex >= this.framePixelData.length) {
+        console.warn(
+          `Video frame index ${videoFrameIndex} out of bounds (${this.framePixelData.length} frames)`,
+        );
+        return [];
+      }
+
+      frameData = this.framePixelData[videoFrameIndex];
+      ts = this.tileSize;
+      frameWidth = this.frameWidth;
+    }
+
     const births: ActiveGaussian[] = [];
     const layout = this.metadata.layout;
-    const ts = this.tileSize;
 
     // Tile offsets (layout values are [col, row] which map to [x/ts, y/ts])
     const meansLOff = [layout.means_l[0] * ts, layout.means_l[1] * ts];
@@ -520,37 +670,49 @@ export class DeltaSplatDecoder {
         frameData,
         meansLOff[0] + col,
         meansLOff[1] + row,
+        frameWidth,
       );
       const meansU = this._getPixel(
         frameData,
         meansUOff[0] + col,
         meansUOff[1] + row,
+        frameWidth,
       );
       const quats = this._getPixel(
         frameData,
         quatsOff[0] + col,
         quatsOff[1] + row,
+        frameWidth,
       );
       const motionL = this._getPixel(
         frameData,
         motionLOff[0] + col,
         motionLOff[1] + row,
+        frameWidth,
       );
       const scales = this._getPixel(
         frameData,
         scalesOff[0] + col,
         scalesOff[1] + row,
+        frameWidth,
       );
-      const sh0 = this._getPixel(frameData, sh0Off[0] + col, sh0Off[1] + row);
+      const sh0 = this._getPixel(
+        frameData,
+        sh0Off[0] + col,
+        sh0Off[1] + row,
+        frameWidth,
+      );
       const motionU = this._getPixel(
         frameData,
         motionUOff[0] + col,
         motionUOff[1] + row,
+        frameWidth,
       );
       const meta = this._getPixel(
         frameData,
         metaOff[0] + col,
         metaOff[1] + row,
+        frameWidth,
       );
 
       // Decode position (16-bit signed-log)
@@ -585,7 +747,7 @@ export class DeltaSplatDecoder {
 
       // Decode lifetime (16-bit) and clamp to remaining frames
       const rawLifetime = meta[0] + meta[1] * 256;
-      const maxLifetime = this.framePixelData.length - frameIndex;
+      const maxLifetime = this.totalFrames - frameIndex;
       const lifetime = Math.min(rawLifetime, maxLifetime);
 
       // Debug: log first birth of first frame
@@ -694,7 +856,24 @@ export class DeltaSplatDecoder {
   }
 
   getTotalFrames(): number {
-    return this.framePixelData.length;
+    return this.totalFrames;
+  }
+
+  hasKeyframes(): boolean {
+    return this.keyframeIndices.size > 0;
+  }
+
+  /**
+   * Set keyframe pixel data directly (for loading from File objects)
+   */
+  setKeyframeData(frameIndex: number, data: Uint8ClampedArray): void {
+    if (!this.keyframeIndices.has(frameIndex)) {
+      console.warn(
+        `Frame ${frameIndex} is not registered as a keyframe, registering now`,
+      );
+      this.keyframeIndices.add(frameIndex);
+    }
+    this.keyframeData.set(frameIndex, data);
   }
 
   getSOGDimensions(): { width: number; height: number } {

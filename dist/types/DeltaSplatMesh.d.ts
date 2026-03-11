@@ -1,4 +1,4 @@
-import { Delta4DGSMetadata } from './DeltaSplatDecoder';
+import { Delta4DGSMetadata, DeltaSplatDecoder } from './DeltaSplatDecoder';
 import { SplatMesh, SplatMeshOptions } from './SplatMesh';
 import * as THREE from "three";
 /**
@@ -36,8 +36,11 @@ export declare class DeltaSplatMesh extends SplatMesh {
     static isSupported(): boolean;
     /**
      * Load a delta-encoded animated WebP video with JSON metadata
+     * @param webpBlob Blob containing the animated WebP video
+     * @param metadata Parsed JSON metadata
+     * @param baseUrl Optional base URL for loading keyframe PNG files (if any)
      */
-    loadDelta(webpBlob: Blob, metadata: Delta4DGSMetadata): Promise<{
+    loadDelta(webpBlob: Blob, metadata: Delta4DGSMetadata, baseUrl?: string): Promise<{
         loadTime: number;
     }>;
     /**
@@ -60,6 +63,18 @@ export declare class DeltaSplatMesh extends SplatMesh {
     pause(): void;
     toggle(): void;
     getTotalFrames(): number;
+    /**
+     * Get the underlying decoder for direct access (e.g., loading keyframes from File objects)
+     */
+    getDecoder(): DeltaSplatDecoder;
+    /**
+     * Create decoder without loading frames (for manual loading flow)
+     */
+    createDecoder(metadata: Delta4DGSMetadata): DeltaSplatDecoder;
+    /**
+     * Initialize GPU mode after frames are loaded (for manual loading flow)
+     */
+    initGPUMode(metadata: Delta4DGSMetadata): void;
     getFPS(): number;
     private quatTransformMode;
     private maxScaleFilter;

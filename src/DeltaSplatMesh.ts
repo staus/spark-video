@@ -84,10 +84,14 @@ export class DeltaSplatMesh extends SplatMesh {
 
   /**
    * Load a delta-encoded animated WebP video with JSON metadata
+   * @param webpBlob Blob containing the animated WebP video
+   * @param metadata Parsed JSON metadata
+   * @param baseUrl Optional base URL for loading keyframe PNG files (if any)
    */
   async loadDelta(
     webpBlob: Blob,
     metadata: Delta4DGSMetadata,
+    baseUrl?: string,
   ): Promise<{ loadTime: number }> {
     const loadStart = performance.now();
 
@@ -96,6 +100,17 @@ export class DeltaSplatMesh extends SplatMesh {
     // Create decoder
     this.decoder = new DeltaSplatDecoder(metadata);
     await this.decoder.loadDeltaFrames(webpBlob);
+
+    // Load keyframes if present and base URL provided
+    if (metadata.keyframes && metadata.keyframes.length > 0) {
+      if (baseUrl) {
+        await this.decoder.loadKeyframes(baseUrl);
+      } else {
+        console.warn(
+          `Metadata has ${metadata.keyframes.length} keyframe(s) but no baseUrl provided - keyframes won't be loaded`,
+        );
+      }
+    }
 
     // Initialize GPU delta mode on PackedSplats (float positions, no CPU encoding)
     const deltaMetadata: DeltaModeMetadata = {
@@ -280,6 +295,78 @@ export class DeltaSplatMesh extends SplatMesh {
 
   getTotalFrames(): number {
     return this.decoder?.getTotalFrames() || 0;
+  }
+
+  /**
+   * Get the underlying decoder for direct access (e.g., loading keyframes from File objects)
+   */
+  getDecoder(): DeltaSplatDecoder {
+    if (!this.decoder) {
+      throw new Error("Decoder not initialized - call loadDelta() first or create decoder manually");
+    }
+    return this.decoder;
+  }
+
+  /**
+   * Create decoder without loading frames (for manual loading flow)
+   */
+  createDecoder(metadata: Delta4DGSMetadata): DeltaSplatDecoder {
+    this.metadata = metadata;
+    this.decoder = new DeltaSplatDecoder(metadata);
+    return this.decoder;
+  }
+
+  /**
+   * Initialize GPU mode after frames are loaded (for manual loading flow)
+   */
+  initGPUMode(metadata: Delta4DGSMetadata): void {
+    if (!this.decoder) {
+      throw new Error("Decoder not created - call createDecoder() first");
+    }
+
+    // Initialize GPU delta mode on PackedSplats
+    const deltaMetadata: DeltaModeMetadata = {
+      maxCount: metadata["4dgs"].max_active_gaussians,
+      scaleCodebook: metadata.sog.scales.codebook,
+      sh0Codebook: metadata.sog.sh0.codebook,
+    };
+    this.packedSplats.initDeltaModeGPU(deltaMetadata);
+
+    // Create GPU textures
+    const { positionSize, attributeWidth, attributeHeight } =
+      this.decoder.getGPUTextureDimensions();
+
+    const posData = new Float32Array(positionSize * positionSize * 4);
+    this.positionTexture = new THREE.DataTexture(
+      posData,
+      positionSize,
+      positionSize,
+      THREE.RGBAFormat,
+      THREE.FloatType,
+    );
+    this.positionTexture.minFilter = THREE.NearestFilter;
+    this.positionTexture.magFilter = THREE.NearestFilter;
+    this.positionTexture.generateMipmaps = false;
+    this.positionTexture.colorSpace = THREE.NoColorSpace;
+
+    const attrData = new Uint8Array(attributeWidth * attributeHeight * 4);
+    this.attributeTexture = new THREE.DataTexture(
+      attrData,
+      attributeWidth,
+      attributeHeight,
+      THREE.RGBAFormat,
+      THREE.UnsignedByteType,
+    );
+    this.attributeTexture.minFilter = THREE.NearestFilter;
+    this.attributeTexture.magFilter = THREE.NearestFilter;
+    this.attributeTexture.generateMipmaps = false;
+    this.attributeTexture.colorSpace = THREE.NoColorSpace;
+
+    this.frameInterval = 1000 / metadata.video.fps;
+
+    console.log(
+      `DeltaSplatMesh GPU mode initialized: ${this.decoder.getTotalFrames()} frames @ ${metadata.video.fps}fps`,
+    );
   }
 
   getFPS(): number {

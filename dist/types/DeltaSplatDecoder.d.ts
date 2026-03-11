@@ -7,6 +7,15 @@
  * Uses canvas 2D with careful color space handling to read raw pixel data.
  */
 /**
+ * Keyframe metadata - frames extracted separately from the video stream
+ */
+export interface KeyframeInfo {
+    frame_index: number;
+    path: string;
+    tile_size: number;
+    birth_count: number;
+}
+/**
  * Metadata format for delta-encoded 4DGS video files (JSON sidecar)
  */
 export interface Delta4DGSMetadata {
@@ -16,6 +25,8 @@ export interface Delta4DGSMetadata {
     video: {
         frames: number;
         fps: number;
+        start_frame?: number;
+        frame_map?: number[];
     };
     sog: {
         means: {
@@ -36,8 +47,10 @@ export interface Delta4DGSMetadata {
     "4dgs": {
         max_active_gaussians: number;
         birth_counts: number[];
+        total_frames?: number;
     };
     encoding: "delta";
+    keyframes?: KeyframeInfo[];
 }
 export declare class DeltaSplatDecoder {
     private metadata;
@@ -58,6 +71,10 @@ export declare class DeltaSplatDecoder {
     private framePixelData;
     private frameWidth;
     private frameHeight;
+    private keyframeData;
+    private keyframeTileSizes;
+    private keyframeIndices;
+    private totalFrames;
     private sogWidth;
     private sogHeight;
     private sogTileData;
@@ -68,7 +85,18 @@ export declare class DeltaSplatDecoder {
     constructor(metadata: Delta4DGSMetadata);
     loadDeltaFrames(webpBlob: Blob): Promise<void>;
     /**
+     * Load keyframe PNG images.
+     * Call this after loadDeltaFrames() if metadata contains keyframes.
+     *
+     * @param baseUrl Base URL for fetching keyframe files (directory containing the JSON)
+     */
+    loadKeyframes(baseUrl: string): Promise<void>;
+    /**
      * Get pixel value from pre-decoded frame data.
+     * @param frameData Raw pixel data
+     * @param x X coordinate
+     * @param y Y coordinate
+     * @param width Frame width (optional, defaults to this.frameWidth)
      */
     private _getPixel;
     /**
@@ -108,6 +136,11 @@ export declare class DeltaSplatDecoder {
     private _assembleSogTexture;
     private _encodePositionInPlace;
     getTotalFrames(): number;
+    hasKeyframes(): boolean;
+    /**
+     * Set keyframe pixel data directly (for loading from File objects)
+     */
+    setKeyframeData(frameIndex: number, data: Uint8ClampedArray): void;
     getSOGDimensions(): {
         width: number;
         height: number;
