@@ -126,6 +126,7 @@ export class DeltaSplatDecoder {
   private keyframeTileSizes: Map<number, number>; // frameIndex -> tile_size
   private keyframeIndices: Set<number>; // Set of frame indices that are keyframes
   private totalFrames: number; // Total frames including keyframes
+  private frameIndexToVideoIndex: Map<number, number> | null = null; // Reverse lookup for O(1) frame mapping
 
   // SOG output: 3x2 tiles (standard SOG layout for GPU decode)
   private sogWidth: number;
@@ -195,6 +196,14 @@ export class DeltaSplatDecoder {
       console.log(
         `Keyframes registered: ${metadata.keyframes.length} (indices: ${Array.from(this.keyframeIndices).join(", ")})`,
       );
+    }
+
+    // Build reverse lookup map for O(1) frame index -> video index mapping
+    if (metadata.video.frame_map) {
+      this.frameIndexToVideoIndex = new Map();
+      metadata.video.frame_map.forEach((frameIdx, videoIdx) => {
+        this.frameIndexToVideoIndex?.set(frameIdx, videoIdx);
+      });
     }
 
     // SOG output tile size: based on max_active, not delta frame tile_size
@@ -341,7 +350,7 @@ export class DeltaSplatDecoder {
     console.log(`Loading ${this.metadata.keyframes.length} keyframe(s)...`);
 
     for (const kf of this.metadata.keyframes) {
-      const url = baseUrl + "/" + kf.path;
+      const url = `${baseUrl}/${kf.path}`;
       console.log(`  Loading keyframe ${kf.frame_index}: ${url}`);
 
       try {
@@ -592,13 +601,6 @@ export class DeltaSplatDecoder {
     }
     // Truncate activeIndices to remove expired entries
     this.activeIndices.length = writeIdx;
-
-    // Debug log every 10 frames
-    if (frameIndex % 10 === 0) {
-      console.log(
-        `Frame ${frameIndex}: ${births.length} births, ${this.activeCount} active`,
-      );
-    }
   }
 
   private _decodeBirths(frameIndex: number): ActiveGaussian[] {
@@ -622,12 +624,13 @@ export class DeltaSplatDecoder {
       ts = this.keyframeTileSizes.get(frameIndex) ?? this.tileSize;
       frameWidth = ts * this.metadata.grid[0];
     } else {
-      // Map original frame index to video frame index
-      const frameMap = this.metadata.video.frame_map;
+      // Map original frame index to video frame index (O(1) lookup)
       let videoFrameIndex: number;
-      if (frameMap) {
-        videoFrameIndex = frameMap.indexOf(frameIndex);
-        if (videoFrameIndex === -1) {
+      if (this.frameIndexToVideoIndex) {
+        const mappedIndex = this.frameIndexToVideoIndex.get(frameIndex);
+        if (mappedIndex !== undefined) {
+          videoFrameIndex = mappedIndex;
+        } else {
           console.warn(
             `Frame ${frameIndex} not found in frame_map, using direct index`,
           );

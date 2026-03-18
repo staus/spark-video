@@ -8,10 +8,13 @@
   "files": {
     "ignoreUnknown": false,
     "ignore": [
+      ".venv",
       "dist/*",
       "examples/assets/",
       "examples/showcase/hello-gsplat",
       "rust/target",
+      "rust/spark-rs/pkg",
+      "rust/spark-worker-rs/pkg",
       "rust/spark-internal-rs/pkg",
       "src/vrButton.ts",
       "site",

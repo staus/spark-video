@@ -216,10 +216,10 @@ export class DeltaSplatMesh extends SplatMesh {
       return false;
     }
 
-    // Frame timing
+    // Frame timing - use fixed-interval advancement to prevent drift
     if (this.lastFrameTime === 0) this.lastFrameTime = now;
     if (now - this.lastFrameTime < this.frameInterval) return false;
-    this.lastFrameTime = now;
+    this.lastFrameTime += this.frameInterval;
 
     // Advance frame
     this.currentFrameIndex =
@@ -302,7 +302,9 @@ export class DeltaSplatMesh extends SplatMesh {
    */
   getDecoder(): DeltaSplatDecoder {
     if (!this.decoder) {
-      throw new Error("Decoder not initialized - call loadDelta() first or create decoder manually");
+      throw new Error(
+        "Decoder not initialized - call loadDelta() first or create decoder manually",
+      );
     }
     return this.decoder;
   }
