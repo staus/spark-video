@@ -93,56 +93,10 @@ export declare class PackedSplats {
     private static clearValue;
     static fullScreenQuad: FullScreenQuad;
     /**
-     * Pre-computed video mode data for fast frame updates
-     */
-    private videoModeData;
-    /**
-     * Initialize for video frame updates with full SOG metadata
-     * Pre-computes all lookup tables for maximum frame update performance
-     */
-    initVideoMode(metadata: SOGVideoMetadata): void;
-    /**
-     * Update splat data from SOG-format video tiles (optimized path)
-     * Uses pre-computed lookup tables for maximum performance
-     */
-    updateFromVideoTiles(tiles: SOGVideoTiles): void;
-    /**
      * Update directly from raw packed array data
      * Fastest path when data is already in Spark format
      */
     updateFromPackedArray(data: Uint32Array, numSplats?: number): void;
-    /**
-     * GPU video mode data - shader materials and textures
-     */
-    private gpuVideoModeData;
-    /**
-     * Initialize GPU video mode with shader-based decoding
-     * Creates codebook textures and decode shader material
-     */
-    initVideoModeGPU(metadata: SOGVideoMetadata, tileSize: number): void;
-    /**
-     * Update splat data from video texture using GPU shader (zero CPU path)
-     * This is the fastest possible path - no getImageData, no CPU loops
-     */
-    updateFromVideoTextureGPU(renderer: THREE.WebGLRenderer, videoTexture: THREE.Texture, tileUVs: GPUVideoTileUVs, videoWidth: number, videoHeight: number): void;
-    /**
-     * Update the splat count for GPU video mode
-     * Call this before updateFromVideoTextureGPU when frame has different count
-     */
-    updateVideoSplatCount(count: number): void;
-    /**
-     * Set up static frame for static/dynamic compositing
-     * Call this once after loading to set the static frame texture
-     */
-    setStaticFrame(staticTexture: THREE.Texture, staticGaussianCount: number): void;
-    /**
-     * Disable static frame compositing
-     */
-    clearStaticFrame(): void;
-    /**
-     * Dispose GPU video mode resources
-     */
-    disposeVideoModeGPU(): void;
     private gpuDeltaModeData;
     /**
      * Initialize GPU delta mode with float position input.
@@ -167,47 +121,6 @@ export declare class PackedSplats {
      */
     disposeDeltaModeGPU(): void;
 }
-/**
- * SOG video metadata for initializing video mode
- */
-export type SOGVideoMetadata = {
-    count: number;
-    mins: [number, number, number];
-    maxs: [number, number, number];
-    scaleCodebook: number[];
-    sh0Codebook: number[];
-    tScaleCodebook?: number[];
-};
-/**
- * SOG video tile data from a single frame
- */
-export type SOGVideoTiles = {
-    means_l: Uint8ClampedArray;
-    means_u: Uint8ClampedArray;
-    quats: Uint8ClampedArray;
-    scales: Uint8ClampedArray;
-    sh0: Uint8ClampedArray;
-};
-/**
- * Tile UV coordinates for GPU video decoding
- */
-export type GPUVideoTileUV = {
-    u0: number;
-    v0: number;
-    u1: number;
-    v1: number;
-};
-/**
- * All tile UVs needed for GPU video decoding
- */
-export type GPUVideoTileUVs = {
-    means_l: GPUVideoTileUV;
-    means_u: GPUVideoTileUV;
-    quats: GPUVideoTileUV;
-    scales: GPUVideoTileUV;
-    sh0: GPUVideoTileUV;
-    t_scale?: GPUVideoTileUV;
-};
 /**
  * Metadata for initializing delta mode (float positions)
  */

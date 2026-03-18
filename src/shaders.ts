@@ -6,7 +6,6 @@ import deltaDecodeFloat from "./shaders/deltaDecodeFloat.glsl";
 import splatDefines from "./shaders/splatDefines.glsl";
 import splatFragment from "./shaders/splatFragment.glsl";
 import splatVertex from "./shaders/splatVertex.glsl";
-import videoDecodeUvec4 from "./shaders/videoDecodeUvec4.glsl";
 
 let shaders: Record<string, string> | null = null;
 
@@ -19,7 +18,6 @@ export function getShaders(): Record<string, string> {
       splatFragment,
       computeVec4Template,
       computeUvec4Template,
-      videoDecodeUvec4,
       deltaDecodeFloat,
     };
   }

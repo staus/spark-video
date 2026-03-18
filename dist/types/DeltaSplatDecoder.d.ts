@@ -75,6 +75,7 @@ export declare class DeltaSplatDecoder {
     private keyframeTileSizes;
     private keyframeIndices;
     private totalFrames;
+    private frameIndexToVideoIndex;
     private sogWidth;
     private sogHeight;
     private sogTileData;

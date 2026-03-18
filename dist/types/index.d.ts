@@ -5,7 +5,7 @@ export { RgbaArray, readRgbaArray } from './RgbaArray';
 export { SplatLoader, unpackSplats, SplatFileType, getSplatFileType, isPcSogs, } from './SplatLoader';
 export { PlyReader } from './ply';
 export { SpzReader, SpzWriter, transcodeSpz } from './spz';
-export { PackedSplats, type PackedSplatsOptions, type SOGVideoMetadata, type SOGVideoTiles, type GPUVideoTileUV, type GPUVideoTileUVs, } from './PackedSplats';
+export { PackedSplats, type PackedSplatsOptions } from './PackedSplats';
 export { SplatGenerator, type GsplatGenerator, SplatModifier, type GsplatModifier, SplatTransformer, } from './SplatGenerator';
 export { SplatAccumulator, type GeneratorMapping } from './SplatAccumulator';
 export { Readback, type Rgba8Readback, type ReadbackBuffer } from './Readback';

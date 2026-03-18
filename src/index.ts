@@ -15,14 +15,7 @@ export {
 export { PlyReader } from "./ply";
 export { SpzReader, SpzWriter, transcodeSpz } from "./spz";
 
-export {
-  PackedSplats,
-  type PackedSplatsOptions,
-  type SOGVideoMetadata,
-  type SOGVideoTiles,
-  type GPUVideoTileUV,
-  type GPUVideoTileUVs,
-} from "./PackedSplats";
+export { PackedSplats, type PackedSplatsOptions } from "./PackedSplats";
 export {
   SplatGenerator,
   type GsplatGenerator,
