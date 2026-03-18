@@ -219,11 +219,24 @@ export class DeltaSplatMesh extends SplatMesh {
     // Frame timing - use fixed-interval advancement to prevent drift
     if (this.lastFrameTime === 0) this.lastFrameTime = now;
     if (now - this.lastFrameTime < this.frameInterval) return false;
+
+    const totalFrames = this.decoder.getTotalFrames();
+
+    // Frame skipping: if significantly behind, skip frames to catch up
+    const framesBehind = Math.floor(
+      (now - this.lastFrameTime) / this.frameInterval,
+    );
+    if (framesBehind > 1) {
+      // Skip frames (max 5 to avoid long stalls on seek)
+      const skip = Math.min(framesBehind - 1, 5);
+      this.currentFrameIndex = (this.currentFrameIndex + skip) % totalFrames;
+      this.lastFrameTime += skip * this.frameInterval;
+    }
+
     this.lastFrameTime += this.frameInterval;
 
     // Advance frame
-    this.currentFrameIndex =
-      (this.currentFrameIndex + 1) % this.decoder.getTotalFrames();
+    this.currentFrameIndex = (this.currentFrameIndex + 1) % totalFrames;
 
     // Process delta frame (GPU mode - no CPU encoding)
     const { positions, attributes, count } = this.decoder.processFrameGPU(

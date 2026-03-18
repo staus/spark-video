@@ -18,9 +18,9 @@ uniform int positionTextureSize;  // Width/height of square texture
 uniform sampler2D attributeTexture;
 uniform int attributeTextureSize;  // Width of texture (height = attributeTextureSize * 3)
 
-// Codebook textures (256x1, R32F format)
-uniform sampler2D scaleCodebook;
-uniform sampler2D sh0Codebook;
+// Combined codebook texture (256x1, RG32F format)
+// R = exp(logScale) pre-computed, G = sh0 value
+uniform sampler2D codebook;
 
 // Splat count
 uniform int splatCount;
@@ -140,21 +140,22 @@ vec4 decodeQuaternion(int splatIndex) {
     return normalize(quat);
 }
 
-// Decode scales via codebook lookup
+// Decode scales via codebook lookup (exp() pre-computed in R channel)
 vec3 decodeScales(int splatIndex) {
     vec4 scalesRaw = sampleAttribute(splatIndex, 1);
     float idxX = floor(scalesRaw.r * 255.0 + 0.5);
     float idxY = floor(scalesRaw.g * 255.0 + 0.5);
     float idxZ = floor(scalesRaw.b * 255.0 + 0.5);
 
-    float logScaleX = texture(scaleCodebook, vec2((idxX + 0.5) / 256.0, 0.5)).r;
-    float logScaleY = texture(scaleCodebook, vec2((idxY + 0.5) / 256.0, 0.5)).r;
-    float logScaleZ = texture(scaleCodebook, vec2((idxZ + 0.5) / 256.0, 0.5)).r;
+    // R channel = exp(logScale), already pre-computed
+    float scaleX = texture(codebook, vec2((idxX + 0.5) / 256.0, 0.5)).r;
+    float scaleY = texture(codebook, vec2((idxY + 0.5) / 256.0, 0.5)).r;
+    float scaleZ = texture(codebook, vec2((idxZ + 0.5) / 256.0, 0.5)).r;
 
-    return vec3(exp(logScaleX), exp(logScaleY), exp(logScaleZ));
+    return vec3(scaleX, scaleY, scaleZ);
 }
 
-// Decode RGBA via codebook lookup
+// Decode RGBA via codebook lookup (sh0 values in G channel)
 vec4 decodeRGBA(int splatIndex) {
     vec4 sh0Raw = sampleAttribute(splatIndex, 2);
 
@@ -162,9 +163,10 @@ vec4 decodeRGBA(int splatIndex) {
     float idxG = floor(sh0Raw.g * 255.0 + 0.5);
     float idxB = floor(sh0Raw.b * 255.0 + 0.5);
 
-    float sh0R = texture(sh0Codebook, vec2((idxR + 0.5) / 256.0, 0.5)).r;
-    float sh0G = texture(sh0Codebook, vec2((idxG + 0.5) / 256.0, 0.5)).r;
-    float sh0B = texture(sh0Codebook, vec2((idxB + 0.5) / 256.0, 0.5)).r;
+    // G channel = sh0 value
+    float sh0R = texture(codebook, vec2((idxR + 0.5) / 256.0, 0.5)).g;
+    float sh0G = texture(codebook, vec2((idxG + 0.5) / 256.0, 0.5)).g;
+    float sh0B = texture(codebook, vec2((idxB + 0.5) / 256.0, 0.5)).g;
 
     float colorR = SH_C0 * sh0R + 0.5;
     float colorG = SH_C0 * sh0G + 0.5;

@@ -749,42 +749,33 @@ export class PackedSplats {
    * Uses a simpler shader that reads float positions directly.
    */
   initDeltaModeGPU(metadata: DeltaModeMetadata) {
-    // Create scale codebook texture (256x1, R32F format)
-    const scaleData = new Float32Array(256);
+    // Create combined codebook texture (256x1, RG32F format)
+    // R = exp(logScale) (pre-computed), G = sh0 value
+    const codebookData = new Float32Array(256 * 2);
     let lnScaleMin = Number.POSITIVE_INFINITY;
     let lnScaleMax = Number.NEGATIVE_INFINITY;
     for (let i = 0; i < 256; i++) {
-      const val = metadata.scaleCodebook[i] ?? metadata.scaleCodebook[0];
-      scaleData[i] = val;
-      if (val < lnScaleMin) lnScaleMin = val;
-      if (val > lnScaleMax) lnScaleMax = val;
-    }
-    const scaleCodebookTexture = new THREE.DataTexture(
-      scaleData,
-      256,
-      1,
-      THREE.RedFormat,
-      THREE.FloatType,
-    );
-    scaleCodebookTexture.minFilter = THREE.NearestFilter;
-    scaleCodebookTexture.magFilter = THREE.NearestFilter;
-    scaleCodebookTexture.needsUpdate = true;
+      const logScale = metadata.scaleCodebook[i] ?? metadata.scaleCodebook[0];
+      const sh0 = metadata.sh0Codebook[i] ?? metadata.sh0Codebook[0];
 
-    // Create SH0/color codebook texture (256x1, R32F format)
-    const sh0Data = new Float32Array(256);
-    for (let i = 0; i < 256; i++) {
-      sh0Data[i] = metadata.sh0Codebook[i] ?? metadata.sh0Codebook[0];
+      // Track log-scale range for encoding
+      if (logScale < lnScaleMin) lnScaleMin = logScale;
+      if (logScale > lnScaleMax) lnScaleMax = logScale;
+
+      // Store exp(logScale) directly - eliminates exp() in shader
+      codebookData[i * 2] = Math.exp(logScale);
+      codebookData[i * 2 + 1] = sh0;
     }
-    const sh0CodebookTexture = new THREE.DataTexture(
-      sh0Data,
+    const codebookTexture = new THREE.DataTexture(
+      codebookData,
       256,
       1,
-      THREE.RedFormat,
+      THREE.RGFormat,
       THREE.FloatType,
     );
-    sh0CodebookTexture.minFilter = THREE.NearestFilter;
-    sh0CodebookTexture.magFilter = THREE.NearestFilter;
-    sh0CodebookTexture.needsUpdate = true;
+    codebookTexture.minFilter = THREE.NearestFilter;
+    codebookTexture.magFilter = THREE.NearestFilter;
+    codebookTexture.needsUpdate = true;
 
     // Set splatEncoding with the actual scale range
     this.splatEncoding = {
@@ -815,8 +806,7 @@ export class PackedSplats {
         positionTextureSize: { value: 0 },
         attributeTexture: { value: null },
         attributeTextureSize: { value: 0 },
-        scaleCodebook: { value: scaleCodebookTexture },
-        sh0Codebook: { value: sh0CodebookTexture },
+        codebook: { value: codebookTexture },
         splatCount: { value: metadata.maxCount },
         rgbMinMaxLnScaleMinMax: {
           value: new THREE.Vector4(0, 1, lnScaleMin, lnScaleMax),
@@ -828,8 +818,7 @@ export class PackedSplats {
 
     this.gpuDeltaModeData = {
       maxCount: metadata.maxCount,
-      scaleCodebookTexture,
-      sh0CodebookTexture,
+      codebookTexture,
       material,
     };
 
@@ -920,8 +909,7 @@ export class PackedSplats {
    */
   disposeDeltaModeGPU() {
     if (this.gpuDeltaModeData) {
-      this.gpuDeltaModeData.scaleCodebookTexture.dispose();
-      this.gpuDeltaModeData.sh0CodebookTexture.dispose();
+      this.gpuDeltaModeData.codebookTexture.dispose();
       this.gpuDeltaModeData.material.dispose();
       this.gpuDeltaModeData = null;
     }
@@ -946,8 +934,7 @@ export type DeltaModeMetadata = {
  */
 type GPUDeltaModeData = {
   maxCount: number;
-  scaleCodebookTexture: THREE.DataTexture;
-  sh0CodebookTexture: THREE.DataTexture;
+  codebookTexture: THREE.DataTexture;
   material: THREE.RawShaderMaterial;
 };
 

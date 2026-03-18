@@ -481,9 +481,7 @@ export class DeltaSplatDecoder {
     const texSize = this.gpuTextureSize;
     const planeSize = texSize * texSize * 4; // bytes per attribute plane
 
-    // Clear buffers
-    this.gpuPositionBuffer.fill(0);
-    this.gpuAttributeBuffer.fill(0);
+    // No buffer clear needed - shader uses splatCount guard to ignore stale data
 
     // Iterate active gaussians
     for (let idx = 0; idx < this.activeIndices.length; idx++) {
