@@ -106,8 +106,16 @@ export declare class PackedSplats {
     /**
      * Update splats from float positions and uint8 attributes.
      * This bypasses the CPU signed-log encoding entirely.
+     *
+     * @param dynamicCount Number of dynamic gaussians in the textures
+     * @param staticCount Number of static gaussians (already uploaded via setStaticDeltaTextures)
      */
-    updateFromDeltaTextureGPU(renderer: THREE.WebGLRenderer, positionTexture: THREE.DataTexture, attributeTexture: THREE.DataTexture, count: number): void;
+    updateFromDeltaTextureGPU(renderer: THREE.WebGLRenderer, positionTexture: THREE.DataTexture, attributeTexture: THREE.DataTexture, dynamicCount: number, staticCount?: number): void;
+    /**
+     * Set static delta textures (uploaded once for keyframe gaussians with zero motion).
+     * These are rendered first, before dynamic gaussians.
+     */
+    setStaticDeltaTextures(renderer: THREE.WebGLRenderer, positionTexture: THREE.DataTexture, attributeTexture: THREE.DataTexture, count: number): void;
     /**
      * Update the quaternion transform mode for delta mode
      */

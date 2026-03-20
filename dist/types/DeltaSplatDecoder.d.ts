@@ -83,6 +83,16 @@ export declare class DeltaSplatDecoder {
     private gpuPositionBuffer;
     private gpuAttributeBuffer;
     private gpuTextureSize;
+    private staticGaussians;
+    private staticCount;
+    private staticPositionBuffer;
+    private staticAttributeBuffer;
+    private staticTextureSize;
+    private staticDataReady;
+    private dynamicTextureSize;
+    private dynamicPositionBuffer;
+    private dynamicAttributeBuffer;
+    private static readonly STATIC_MOTION_THRESHOLD;
     constructor(metadata: Delta4DGSMetadata);
     loadDeltaFrames(webpBlob: Blob): Promise<void>;
     /**
@@ -130,6 +140,38 @@ export declare class DeltaSplatDecoder {
         positionSize: number;
         attributeWidth: number;
         attributeHeight: number;
+    };
+    /**
+     * Initialize and fill static buffers after keyframe processing.
+     * Call this after processFrameGPU(0) to finalize static data.
+     */
+    initStaticBuffers(): void;
+    /**
+     * Get static gaussian data for one-time GPU upload.
+     * Returns null if no static gaussians or not yet initialized.
+     */
+    getStaticData(): {
+        positions: Float32Array;
+        attributes: Uint8Array;
+        count: number;
+        textureSize: number;
+    } | null;
+    /**
+     * Get static texture dimensions for creating THREE.DataTexture.
+     * Returns null if no static gaussians.
+     */
+    getStaticTextureDimensions(): {
+        positionSize: number;
+        attributeWidth: number;
+        attributeHeight: number;
+    } | null;
+    /**
+     * Get counts for static vs dynamic gaussians.
+     */
+    getGaussianCounts(): {
+        static: number;
+        dynamic: number;
+        total: number;
     };
     reset(): void;
     private _processOneFrame;

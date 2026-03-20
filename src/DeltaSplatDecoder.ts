@@ -141,6 +141,26 @@ export class DeltaSplatDecoder {
   private gpuAttributeBuffer: Uint8Array; // 3 rows: quats, scales, sh0
   private gpuTextureSize: number; // Square texture side length
 
+  // Static/dynamic separation for GPU upload optimization
+  // Static gaussians: keyframe births with zero/minimal motion (uploaded once)
+  // Dynamic gaussians: all others (uploaded each frame)
+  private staticGaussians: ActiveGaussian[] = [];
+  private staticCount = 0;
+  private staticPositionBuffer: Float32Array | null = null;
+  private staticAttributeBuffer: Uint8Array | null = null;
+  private staticTextureSize = 0;
+  private staticDataReady = false;
+
+  // Dynamic gaussian tracking (excludes static keyframe gaussians)
+  private dynamicTextureSize = 0;
+  private dynamicPositionBuffer: Float32Array | null = null;
+  private dynamicAttributeBuffer: Uint8Array | null = null;
+
+  // Motion magnitude threshold for classifying keyframe births as static
+  // Gaussians with motion below this are uploaded once and never updated
+  // 0.001 captures ~86% of keyframe births (motion below this is imperceptible)
+  private static readonly STATIC_MOTION_THRESHOLD = 0.001;
+
   constructor(metadata: Delta4DGSMetadata) {
     this.metadata = metadata;
     this.tileSize = metadata.tile_size;
@@ -424,8 +444,8 @@ export class DeltaSplatDecoder {
    * Returns { data: Uint8Array, count: number }
    */
   processFrame(frameIndex: number): { data: Uint8Array; count: number } {
-    // Reset if we're starting over
-    if (frameIndex === 0 && this.currentFrameIndex !== 0) {
+    // Reset on backwards seek (includes loop wrap: e.g., 253 -> 2)
+    if (frameIndex < this.currentFrameIndex) {
       this.reset();
     }
 
@@ -451,8 +471,8 @@ export class DeltaSplatDecoder {
     count: number;
     textureSize: number;
   } {
-    // Reset if we're starting over
-    if (frameIndex === 0 && this.currentFrameIndex !== 0) {
+    // Reset on backwards seek (includes loop wrap: e.g., 253 -> 2)
+    if (frameIndex < this.currentFrameIndex) {
       this.reset();
     }
 
@@ -538,7 +558,145 @@ export class DeltaSplatDecoder {
     };
   }
 
+  /**
+   * Initialize and fill static buffers after keyframe processing.
+   * Call this after processFrameGPU(0) to finalize static data.
+   */
+  initStaticBuffers(): void {
+    if (this.staticDataReady) return;
+    if (this.staticCount === 0) {
+      console.log("No static gaussians to buffer");
+      this.staticDataReady = true;
+      return;
+    }
+
+    // Calculate static texture size (power of 2, square)
+    const staticTexSide = Math.ceil(Math.sqrt(this.staticCount));
+    const staticTexSizePow = Math.ceil(Math.log2(Math.max(staticTexSide, 1)));
+    this.staticTextureSize = 2 ** staticTexSizePow;
+
+    // Allocate static buffers
+    const texSize = this.staticTextureSize;
+    this.staticPositionBuffer = new Float32Array(texSize * texSize * 4);
+    this.staticAttributeBuffer = new Uint8Array(texSize * texSize * 3 * 4);
+
+    // Fill static buffers (positions never change)
+    const planeSize = texSize * texSize * 4;
+
+    for (let idx = 0; idx < this.staticGaussians.length; idx++) {
+      const g = this.staticGaussians[idx];
+
+      const row = Math.floor(idx / texSize);
+      const col = idx % texSize;
+
+      // Position buffer
+      const posBase = (row * texSize + col) * 4;
+      this.staticPositionBuffer[posBase] = g.position[0];
+      this.staticPositionBuffer[posBase + 1] = g.position[1];
+      this.staticPositionBuffer[posBase + 2] = g.position[2];
+      this.staticPositionBuffer[posBase + 3] = 1.0;
+
+      // Attribute buffer (3 planes)
+      const pixelOffset = (row * texSize + col) * 4;
+
+      // Plane 0: quats
+      const quatsBase = pixelOffset;
+      this.staticAttributeBuffer[quatsBase] = g.quatsEncoded[0];
+      this.staticAttributeBuffer[quatsBase + 1] = g.quatsEncoded[1];
+      this.staticAttributeBuffer[quatsBase + 2] = g.quatsEncoded[2];
+      this.staticAttributeBuffer[quatsBase + 3] = g.quatsEncoded[3];
+
+      // Plane 1: scales
+      const scalesBase = planeSize + pixelOffset;
+      this.staticAttributeBuffer[scalesBase] = g.scalesEncoded[0];
+      this.staticAttributeBuffer[scalesBase + 1] = g.scalesEncoded[1];
+      this.staticAttributeBuffer[scalesBase + 2] = g.scalesEncoded[2];
+      this.staticAttributeBuffer[scalesBase + 3] = g.scalesEncoded[3];
+
+      // Plane 2: sh0
+      const sh0Base = planeSize * 2 + pixelOffset;
+      this.staticAttributeBuffer[sh0Base] = g.sh0Encoded[0];
+      this.staticAttributeBuffer[sh0Base + 1] = g.sh0Encoded[1];
+      this.staticAttributeBuffer[sh0Base + 2] = g.sh0Encoded[2];
+      this.staticAttributeBuffer[sh0Base + 3] = g.sh0Encoded[3];
+    }
+
+    this.staticDataReady = true;
+
+    console.log(
+      `Static buffers initialized: ${this.staticCount} gaussians, ` +
+        `${this.staticTextureSize}x${this.staticTextureSize} texture, ` +
+        `${((this.staticPositionBuffer.byteLength + this.staticAttributeBuffer.byteLength) / 1024).toFixed(1)} KB`,
+    );
+  }
+
+  /**
+   * Get static gaussian data for one-time GPU upload.
+   * Returns null if no static gaussians or not yet initialized.
+   */
+  getStaticData(): {
+    positions: Float32Array;
+    attributes: Uint8Array;
+    count: number;
+    textureSize: number;
+  } | null {
+    if (
+      !this.staticDataReady ||
+      !this.staticPositionBuffer ||
+      !this.staticAttributeBuffer
+    ) {
+      return null;
+    }
+    return {
+      positions: this.staticPositionBuffer,
+      attributes: this.staticAttributeBuffer,
+      count: this.staticCount,
+      textureSize: this.staticTextureSize,
+    };
+  }
+
+  /**
+   * Get static texture dimensions for creating THREE.DataTexture.
+   * Returns null if no static gaussians.
+   */
+  getStaticTextureDimensions(): {
+    positionSize: number;
+    attributeWidth: number;
+    attributeHeight: number;
+  } | null {
+    if (this.staticCount === 0) return null;
+
+    // Ensure static texture size is calculated
+    if (this.staticTextureSize === 0) {
+      const staticTexSide = Math.ceil(Math.sqrt(this.staticCount));
+      const staticTexSizePow = Math.ceil(Math.log2(Math.max(staticTexSide, 1)));
+      this.staticTextureSize = 2 ** staticTexSizePow;
+    }
+
+    return {
+      positionSize: this.staticTextureSize,
+      attributeWidth: this.staticTextureSize,
+      attributeHeight: this.staticTextureSize * 3,
+    };
+  }
+
+  /**
+   * Get counts for static vs dynamic gaussians.
+   */
+  getGaussianCounts(): {
+    static: number;
+    dynamic: number;
+    total: number;
+  } {
+    return {
+      static: this.staticCount,
+      dynamic: this.activeCount,
+      total: this.staticCount + this.activeCount,
+    };
+  }
+
   reset(): void {
+    // Clear dynamic gaussians only - static gaussians persist across loops
     this.activeGaussians.fill(null);
     this.activeIndices = [];
     this.freeSlots = [];
@@ -547,14 +705,35 @@ export class DeltaSplatDecoder {
     }
     this.activeCount = 0;
     this.currentFrameIndex = 0;
+    // Note: staticGaussians, staticCount, and staticDataReady are NOT reset
+    // Static data is uploaded once and reused across animation loops
   }
 
   private _processOneFrame(frameIndex: number): void {
     // 1. Decode births from delta frame
     const births = this._decodeBirths(frameIndex);
 
-    // 2. Add births to active set
+    // 2. Add births to appropriate pool
+    // Keyframe births with zero/minimal motion go to static pool (uploaded once)
+    // All others go to dynamic pool (uploaded each frame)
+    const isKeyframe = this.keyframeIndices.has(frameIndex);
+
     for (const birth of births) {
+      // Check if this is a static gaussian (keyframe birth with minimal motion)
+      if (isKeyframe) {
+        const motionMag = Math.sqrt(
+          birth.motion[0] ** 2 + birth.motion[1] ** 2 + birth.motion[2] ** 2,
+        );
+
+        if (motionMag < DeltaSplatDecoder.STATIC_MOTION_THRESHOLD) {
+          // Static gaussian: store separately, never needs motion updates
+          this.staticGaussians.push(birth);
+          this.staticCount++;
+          continue;
+        }
+      }
+
+      // Dynamic gaussian: add to active set with lifetime tracking
       if (this.freeSlots.length === 0) {
         console.warn(`No free slots for birth at frame ${frameIndex}`);
         break;
@@ -566,12 +745,30 @@ export class DeltaSplatDecoder {
       this.activeCount++;
     }
 
+    // Log keyframe static/dynamic split
+    if (isKeyframe && births.length > 0) {
+      console.log(
+        `Keyframe ${frameIndex}: ${births.length} births → ` +
+          `${this.staticCount} static (total), ${this.activeCount} dynamic (active)`,
+      );
+    }
+
     // 3. Update positions and decrement lifetimes (iterate only active slots)
     let writeIdx = 0;
     for (let readIdx = 0; readIdx < this.activeIndices.length; readIdx++) {
       const slot = this.activeIndices[readIdx];
       const g = this.activeGaussians[slot];
       if (!g) continue;
+
+      // Free expired gaussians FIRST (check-then-decrement to match encoder's lifetime)
+      // With lifetime=3: visible at frames B, B+1, B+2, then removed at B+3
+      if (g.remainingFrames <= 0) {
+        this.activeGaussians[slot] = null;
+        this.freeSlots.push(slot);
+        this.activeCount--;
+        // Don't copy to writeIdx (effectively removes from activeIndices)
+        continue;
+      }
 
       // Skip motion update for newly-born gaussians (they just spawned)
       if (g.justBorn) {
@@ -583,19 +780,11 @@ export class DeltaSplatDecoder {
         g.position[2] += g.motion[2];
       }
 
-      // Decrement lifetime
+      // Decrement lifetime for next frame
       g.remainingFrames--;
 
-      // Free expired gaussians
-      if (g.remainingFrames < 0) {
-        this.activeGaussians[slot] = null;
-        this.freeSlots.push(slot);
-        this.activeCount--;
-        // Don't copy to writeIdx (effectively removes from activeIndices)
-      } else {
-        // Keep this slot in activeIndices (compacting in place)
-        this.activeIndices[writeIdx++] = slot;
-      }
+      // Keep this slot in activeIndices (compacting in place)
+      this.activeIndices[writeIdx++] = slot;
     }
     // Truncate activeIndices to remove expired entries
     this.activeIndices.length = writeIdx;

@@ -802,10 +802,18 @@ export class PackedSplats {
         targetLayer: { value: 0 },
         targetBase: { value: 0 },
         targetCount: { value: 0 },
+        // Dynamic textures (uploaded each frame)
         positionTexture: { value: null },
         positionTextureSize: { value: 0 },
         attributeTexture: { value: null },
         attributeTextureSize: { value: 0 },
+        // Static textures (uploaded once for keyframe gaussians with zero motion)
+        staticPositionTexture: { value: null },
+        staticPositionTextureSize: { value: 0 },
+        staticAttributeTexture: { value: null },
+        staticAttributeTextureSize: { value: 0 },
+        staticCount: { value: 0 },
+        // Shared uniforms
         codebook: { value: codebookTexture },
         splatCount: { value: metadata.maxCount },
         rgbMinMaxLnScaleMinMax: {
@@ -831,12 +839,16 @@ export class PackedSplats {
   /**
    * Update splats from float positions and uint8 attributes.
    * This bypasses the CPU signed-log encoding entirely.
+   *
+   * @param dynamicCount Number of dynamic gaussians in the textures
+   * @param staticCount Number of static gaussians (already uploaded via setStaticDeltaTextures)
    */
   updateFromDeltaTextureGPU(
     renderer: THREE.WebGLRenderer,
     positionTexture: THREE.DataTexture,
     attributeTexture: THREE.DataTexture,
-    count: number,
+    dynamicCount: number,
+    staticCount = 0,
   ) {
     if (!this.gpuDeltaModeData) {
       throw new Error("Call initDeltaModeGPU() first");
@@ -849,24 +861,28 @@ export class PackedSplats {
     const posTexSize = positionTexture.image.width;
     const attrTexSize = attributeTexture.image.width;
 
-    // Update uniforms
+    // Total count = static + dynamic
+    const totalCount = staticCount + dynamicCount;
+
+    // Update uniforms for dynamic textures
     material.uniforms.positionTexture.value = positionTexture;
     material.uniforms.positionTextureSize.value = posTexSize;
     material.uniforms.attributeTexture.value = attributeTexture;
     material.uniforms.attributeTextureSize.value = attrTexSize;
-    material.uniforms.splatCount.value = count;
+    material.uniforms.splatCount.value = totalCount;
+    material.uniforms.staticCount.value = staticCount;
 
     // Render to packed splat texture
     const renderState = this.saveRenderState(renderer);
 
     const layerSize = SPLAT_TEX_WIDTH * SPLAT_TEX_HEIGHT;
-    const numLayers = Math.ceil(count / layerSize);
+    const numLayers = Math.ceil(totalCount / layerSize);
 
     PackedSplats.fullScreenQuad.material = material;
 
     for (let layer = 0; layer < numLayers; layer++) {
       const layerBase = layer * layerSize;
-      const layerCount = Math.min(count - layerBase, layerSize);
+      const layerCount = Math.min(totalCount - layerBase, layerSize);
       const layerYEnd = Math.ceil(layerCount / SPLAT_TEX_WIDTH);
 
       material.uniforms.targetLayer.value = layer;
@@ -883,7 +899,41 @@ export class PackedSplats {
     }
 
     this.resetRenderState(renderer, renderState);
-    this.numSplats = count;
+    this.numSplats = totalCount;
+  }
+
+  /**
+   * Set static delta textures (uploaded once for keyframe gaussians with zero motion).
+   * These are rendered first, before dynamic gaussians.
+   */
+  setStaticDeltaTextures(
+    renderer: THREE.WebGLRenderer,
+    positionTexture: THREE.DataTexture,
+    attributeTexture: THREE.DataTexture,
+    count: number,
+  ) {
+    if (!this.gpuDeltaModeData) {
+      throw new Error("Call initDeltaModeGPU() first");
+    }
+
+    const { material } = this.gpuDeltaModeData;
+    const posTexSize = positionTexture.image.width;
+    const attrTexSize = attributeTexture.image.width;
+
+    // Upload textures to GPU
+    renderer.initTexture(positionTexture);
+    renderer.initTexture(attributeTexture);
+
+    // Set static texture uniforms
+    material.uniforms.staticPositionTexture.value = positionTexture;
+    material.uniforms.staticPositionTextureSize.value = posTexSize;
+    material.uniforms.staticAttributeTexture.value = attributeTexture;
+    material.uniforms.staticAttributeTextureSize.value = attrTexSize;
+    material.uniforms.staticCount.value = count;
+
+    console.log(
+      `PackedSplats.setStaticDeltaTextures: ${count} gaussians, ${posTexSize}x${posTexSize} texture`,
+    );
   }
 
   /**

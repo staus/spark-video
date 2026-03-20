@@ -23,6 +23,10 @@ export declare class DeltaSplatMesh extends SplatMesh {
     private decoder;
     private positionTexture;
     private attributeTexture;
+    private staticPositionTexture;
+    private staticAttributeTexture;
+    private staticTexturesUploaded;
+    private staticCount;
     private metadata;
     currentFrameIndex: number;
     isPlaying: boolean;
@@ -45,8 +49,14 @@ export declare class DeltaSplatMesh extends SplatMesh {
     }>;
     /**
      * Decode first frame without starting playback.
+     * Also initializes and uploads static textures (keyframe gaussians with zero motion).
      */
     decodeFirstFrame(renderer: THREE.WebGLRenderer): void;
+    /**
+     * Initialize static textures for keyframe gaussians with zero motion.
+     * These are uploaded once and never updated.
+     */
+    private _initStaticTextures;
     /**
      * Seek to a specific frame.
      * Note: Delta decoding requires sequential processing.
@@ -63,6 +73,14 @@ export declare class DeltaSplatMesh extends SplatMesh {
     pause(): void;
     toggle(): void;
     getTotalFrames(): number;
+    /**
+     * Get static/dynamic gaussian counts for performance monitoring
+     */
+    getGaussianCounts(): {
+        static: number;
+        dynamic: number;
+        total: number;
+    };
     /**
      * Get the underlying decoder for direct access (e.g., loading keyframes from File objects)
      */

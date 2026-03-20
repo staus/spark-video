@@ -9,20 +9,24 @@ uniform uint targetLayer;
 uniform int targetBase;
 uniform int targetCount;
 
-// Float position texture (RGB32F, one texel per gaussian)
+// Dynamic textures (uploaded each frame)
 uniform sampler2D positionTexture;
 uniform int positionTextureSize;  // Width/height of square texture
-
-// Attribute texture (RGBA8, 3 planes: quats, scales, sh0)
-// Each plane is attributeTextureSize x attributeTextureSize
 uniform sampler2D attributeTexture;
 uniform int attributeTextureSize;  // Width of texture (height = attributeTextureSize * 3)
+
+// Static textures (uploaded once for keyframe gaussians with zero motion)
+uniform sampler2D staticPositionTexture;
+uniform int staticPositionTextureSize;
+uniform sampler2D staticAttributeTexture;
+uniform int staticAttributeTextureSize;
+uniform int staticCount;  // Number of static gaussians (indices 0..staticCount-1)
 
 // Combined codebook texture (256x1, RG32F format)
 // R = exp(logScale) pre-computed, G = sh0 value
 uniform sampler2D codebook;
 
-// Splat count
+// Splat count (total = static + dynamic)
 uniform int splatCount;
 
 // Encoding range for pack/unpack
@@ -101,20 +105,50 @@ vec4 applyQuatTransformLocal(vec4 q) {
     return normalize(result);
 }
 
-// Sample position from float texture using texelFetch for exact pixel access
-vec3 samplePosition(int splatIndex) {
-    int x = splatIndex % positionTextureSize;
-    int y = splatIndex / positionTextureSize;
+// Sample position from static texture
+vec3 sampleStaticPosition(int idx) {
+    int x = idx % staticPositionTextureSize;
+    int y = idx / staticPositionTextureSize;
+    return texelFetch(staticPositionTexture, ivec2(x, y), 0).rgb;
+}
+
+// Sample position from dynamic texture
+vec3 sampleDynamicPosition(int idx) {
+    int x = idx % positionTextureSize;
+    int y = idx / positionTextureSize;
     return texelFetch(positionTexture, ivec2(x, y), 0).rgb;
 }
 
-// Sample attribute row (0=quats, 1=scales, 2=sh0) using texelFetch
-// Attribute texture layout: 3 planes stacked vertically, each gpuTextureSize x gpuTextureSize
-vec4 sampleAttribute(int splatIndex, int row) {
-    int x = splatIndex % attributeTextureSize;
-    int y = splatIndex / attributeTextureSize;
-    // Each plane is attributeTextureSize rows tall
+// Sample position based on splat index (static vs dynamic)
+vec3 samplePosition(int splatIndex) {
+    if (splatIndex < staticCount) {
+        return sampleStaticPosition(splatIndex);
+    } else {
+        return sampleDynamicPosition(splatIndex - staticCount);
+    }
+}
+
+// Sample attribute from static texture
+vec4 sampleStaticAttribute(int idx, int row) {
+    int x = idx % staticAttributeTextureSize;
+    int y = idx / staticAttributeTextureSize;
+    return texelFetch(staticAttributeTexture, ivec2(x, row * staticAttributeTextureSize + y), 0);
+}
+
+// Sample attribute from dynamic texture
+vec4 sampleDynamicAttribute(int idx, int row) {
+    int x = idx % attributeTextureSize;
+    int y = idx / attributeTextureSize;
     return texelFetch(attributeTexture, ivec2(x, row * attributeTextureSize + y), 0);
+}
+
+// Sample attribute based on splat index (static vs dynamic)
+vec4 sampleAttribute(int splatIndex, int row) {
+    if (splatIndex < staticCount) {
+        return sampleStaticAttribute(splatIndex, row);
+    } else {
+        return sampleDynamicAttribute(splatIndex - staticCount, row);
+    }
 }
 
 // Decode quaternion from smallest-three encoding

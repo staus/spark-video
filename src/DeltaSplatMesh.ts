@@ -58,8 +58,15 @@ export class DeltaSplatMesh extends SplatMesh {
     "cycleYZWX",
   ];
   private decoder: DeltaSplatDecoder | null = null;
+  // Dynamic textures (uploaded each frame)
   private positionTexture: THREE.DataTexture | null = null;
   private attributeTexture: THREE.DataTexture | null = null;
+  // Static textures (uploaded once after first frame)
+  private staticPositionTexture: THREE.DataTexture | null = null;
+  private staticAttributeTexture: THREE.DataTexture | null = null;
+  private staticTexturesUploaded = false;
+  private staticCount = 0;
+
   private metadata: Delta4DGSMetadata | null = null;
 
   currentFrameIndex = 0;
@@ -167,6 +174,7 @@ export class DeltaSplatMesh extends SplatMesh {
 
   /**
    * Decode first frame without starting playback.
+   * Also initializes and uploads static textures (keyframe gaussians with zero motion).
    */
   decodeFirstFrame(renderer: THREE.WebGLRenderer): void {
     if (!this.decoder) return;
@@ -175,7 +183,75 @@ export class DeltaSplatMesh extends SplatMesh {
     this.currentFrameIndex = 0;
     const { positions, attributes, count } = this.decoder.processFrameGPU(0);
 
+    // Initialize static buffers after first frame (classifies keyframe births)
+    this.decoder.initStaticBuffers();
+    this._initStaticTextures(renderer);
+
     this._uploadFrameGPU(renderer, positions, attributes, count);
+  }
+
+  /**
+   * Initialize static textures for keyframe gaussians with zero motion.
+   * These are uploaded once and never updated.
+   */
+  private _initStaticTextures(renderer: THREE.WebGLRenderer): void {
+    if (this.staticTexturesUploaded || !this.decoder) return;
+
+    const staticData = this.decoder.getStaticData();
+    if (!staticData) {
+      console.log("No static gaussians - all gaussians are dynamic");
+      this.staticTexturesUploaded = true;
+      return;
+    }
+
+    const { positions, attributes, count, textureSize } = staticData;
+    this.staticCount = count;
+
+    // Create static position texture
+    this.staticPositionTexture = new THREE.DataTexture(
+      positions,
+      textureSize,
+      textureSize,
+      THREE.RGBAFormat,
+      THREE.FloatType,
+    );
+    this.staticPositionTexture.minFilter = THREE.NearestFilter;
+    this.staticPositionTexture.magFilter = THREE.NearestFilter;
+    this.staticPositionTexture.generateMipmaps = false;
+    this.staticPositionTexture.colorSpace = THREE.NoColorSpace;
+    this.staticPositionTexture.needsUpdate = true;
+
+    // Create static attribute texture
+    this.staticAttributeTexture = new THREE.DataTexture(
+      attributes,
+      textureSize,
+      textureSize * 3,
+      THREE.RGBAFormat,
+      THREE.UnsignedByteType,
+    );
+    this.staticAttributeTexture.minFilter = THREE.NearestFilter;
+    this.staticAttributeTexture.magFilter = THREE.NearestFilter;
+    this.staticAttributeTexture.generateMipmaps = false;
+    this.staticAttributeTexture.colorSpace = THREE.NoColorSpace;
+    this.staticAttributeTexture.needsUpdate = true;
+
+    // Upload static textures to GPU (one-time upload)
+    this.packedSplats.setStaticDeltaTextures(
+      renderer,
+      this.staticPositionTexture,
+      this.staticAttributeTexture,
+      count,
+    );
+
+    this.staticTexturesUploaded = true;
+
+    const staticKB = (
+      (positions.byteLength + attributes.byteLength) /
+      1024
+    ).toFixed(1);
+    console.log(
+      `Static textures uploaded: ${count} gaussians, ${textureSize}x${textureSize}, ${staticKB} KB`,
+    );
   }
 
   /**
@@ -222,41 +298,42 @@ export class DeltaSplatMesh extends SplatMesh {
 
     const totalFrames = this.decoder.getTotalFrames();
 
-    // Frame skipping: if significantly behind, skip frames to catch up
+    // Calculate how many frames we need to process to catch up
     const framesBehind = Math.floor(
       (now - this.lastFrameTime) / this.frameInterval,
     );
-    if (framesBehind > 1) {
-      // Skip frames (max 5 to avoid long stalls on seek)
-      const skip = Math.min(framesBehind - 1, 5);
-      this.currentFrameIndex = (this.currentFrameIndex + skip) % totalFrames;
-      this.lastFrameTime += skip * this.frameInterval;
+
+    // Process up to 3 frames per tick when catching up
+    // CRITICAL: We upload EACH frame to ensure all gaussians are displayed
+    // (not just the final state). Short-lived gaussians would otherwise
+    // be born and die within the catch-up loop without ever being visible.
+    const framesToProcess = Math.min(framesBehind, 3);
+
+    for (let i = 0; i < framesToProcess; i++) {
+      this.lastFrameTime += this.frameInterval;
+      this.currentFrameIndex = (this.currentFrameIndex + 1) % totalFrames;
+
+      // Process delta frame (GPU mode - no CPU encoding)
+      const { positions, attributes, count } = this.decoder.processFrameGPU(
+        this.currentFrameIndex,
+      );
+
+      // Upload each frame - ensures all gaussians get displayed
+      this._uploadFrameGPU(renderer, positions, attributes, count);
     }
 
-    this.lastFrameTime += this.frameInterval;
-
-    // Advance frame
-    this.currentFrameIndex = (this.currentFrameIndex + 1) % totalFrames;
-
-    // Process delta frame (GPU mode - no CPU encoding)
-    const { positions, attributes, count } = this.decoder.processFrameGPU(
-      this.currentFrameIndex,
-    );
-
-    this._uploadFrameGPU(renderer, positions, attributes, count);
-
-    return true;
+    return framesToProcess > 0;
   }
 
   private _uploadFrameGPU(
     renderer: THREE.WebGLRenderer,
     positions: Float32Array,
     attributes: Uint8Array,
-    count: number,
+    dynamicCount: number,
   ): void {
     if (!this.positionTexture || !this.attributeTexture) return;
 
-    // Update position texture data
+    // Update position texture data (dynamic gaussians only)
     const posImageData = this.positionTexture.image as {
       data: Float32Array;
       width: number;
@@ -265,7 +342,7 @@ export class DeltaSplatMesh extends SplatMesh {
     posImageData.data.set(positions);
     this.positionTexture.needsUpdate = true;
 
-    // Update attribute texture data
+    // Update attribute texture data (dynamic gaussians only)
     const attrImageData = this.attributeTexture.image as {
       data: Uint8Array;
       width: number;
@@ -274,15 +351,40 @@ export class DeltaSplatMesh extends SplatMesh {
     attrImageData.data.set(attributes);
     this.attributeTexture.needsUpdate = true;
 
-    // GPU decode (float positions, no signed-log encoding)
-    this.numSplats = count;
+    // Total count = static + dynamic
+    const totalCount = this.staticCount + dynamicCount;
+    this.numSplats = totalCount;
 
+    // GPU decode (float positions, no signed-log encoding)
+    // Passes static count so shader knows where dynamic data starts
     this.packedSplats.updateFromDeltaTextureGPU(
       renderer,
       this.positionTexture,
       this.attributeTexture,
-      count,
+      dynamicCount,
+      this.staticCount,
     );
+
+    // Log upload stats (every 30 frames to avoid spam)
+    if (this.currentFrameIndex % 30 === 0) {
+      // Dynamic data actually used (not full texture size)
+      const dynamicPosBytes = dynamicCount * 16; // 4 floats × 4 bytes
+      const dynamicAttrBytes = dynamicCount * 12; // 3 planes × 4 bytes
+      const dynamicKB = ((dynamicPosBytes + dynamicAttrBytes) / 1024).toFixed(
+        1,
+      );
+      // Full texture upload size (what GPU actually receives)
+      const texPosBytes = this.positionTexture.image.width ** 2 * 16;
+      const texAttrBytes =
+        this.attributeTexture.image.width *
+        this.attributeTexture.image.height *
+        4;
+      const texKB = ((texPosBytes + texAttrBytes) / 1024).toFixed(1);
+      console.log(
+        `Frame ${this.currentFrameIndex}: ${dynamicCount} dynamic + ${this.staticCount} static = ${totalCount} total ` +
+          `(${dynamicKB} KB data, ${texKB} KB texture)`,
+      );
+    }
 
     this.updateVersion();
 
@@ -308,6 +410,18 @@ export class DeltaSplatMesh extends SplatMesh {
 
   getTotalFrames(): number {
     return this.decoder?.getTotalFrames() || 0;
+  }
+
+  /**
+   * Get static/dynamic gaussian counts for performance monitoring
+   */
+  getGaussianCounts(): { static: number; dynamic: number; total: number } {
+    const dynamicCount = this.numSplats - this.staticCount;
+    return {
+      static: this.staticCount,
+      dynamic: dynamicCount,
+      total: this.numSplats,
+    };
   }
 
   /**
@@ -441,11 +555,15 @@ export class DeltaSplatMesh extends SplatMesh {
     this.positionTexture.needsUpdate = true;
     this.attributeTexture.needsUpdate = true;
 
+    // Dynamic count = total - static
+    const dynamicCount = this.numSplats - this.staticCount;
+
     this.packedSplats.updateFromDeltaTextureGPU(
       renderer,
       this.positionTexture,
       this.attributeTexture,
-      this.numSplats,
+      dynamicCount,
+      this.staticCount,
     );
 
     this.updateVersion();
@@ -479,6 +597,14 @@ export class DeltaSplatMesh extends SplatMesh {
     if (this.attributeTexture) {
       this.attributeTexture.dispose();
       this.attributeTexture = null;
+    }
+    if (this.staticPositionTexture) {
+      this.staticPositionTexture.dispose();
+      this.staticPositionTexture = null;
+    }
+    if (this.staticAttributeTexture) {
+      this.staticAttributeTexture.dispose();
+      this.staticAttributeTexture = null;
     }
     this.packedSplats.disposeDeltaModeGPU();
     super.dispose();
