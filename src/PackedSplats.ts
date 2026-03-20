@@ -820,7 +820,6 @@ export class PackedSplats {
           value: new THREE.Vector4(0, 1, lnScaleMin, lnScaleMax),
         },
         quatTransformMode: { value: 0 },
-        maxScaleFilter: { value: 0.0 },
       },
     });
 
@@ -942,15 +941,6 @@ export class PackedSplats {
   setDeltaQuatTransformMode(mode: number) {
     if (this.gpuDeltaModeData) {
       this.gpuDeltaModeData.material.uniforms.quatTransformMode.value = mode;
-    }
-  }
-
-  /**
-   * Update the max scale filter for delta mode
-   */
-  setDeltaMaxScaleFilter(maxScale: number) {
-    if (this.gpuDeltaModeData) {
-      this.gpuDeltaModeData.material.uniforms.maxScaleFilter.value = maxScale;
     }
   }
 

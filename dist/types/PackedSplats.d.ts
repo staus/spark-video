@@ -121,10 +121,6 @@ export declare class PackedSplats {
      */
     setDeltaQuatTransformMode(mode: number): void;
     /**
-     * Update the max scale filter for delta mode
-     */
-    setDeltaMaxScaleFilter(maxScale: number): void;
-    /**
      * Dispose GPU delta mode resources
      */
     disposeDeltaModeGPU(): void;

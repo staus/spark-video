@@ -35,9 +35,6 @@ uniform vec4 rgbMinMaxLnScaleMinMax;
 // Quaternion transform mode
 uniform int quatTransformMode;
 
-// Scale filtering
-uniform float maxScaleFilter;
-
 out uvec4 target;
 
 // Constants
@@ -227,14 +224,6 @@ void main() {
 
         // Apply quaternion transform
         quaternion = applyQuatTransformLocal(quaternion);
-
-        // Scale filtering
-        if (maxScaleFilter > 0.0) {
-            float maxAxis = max(scales.x, max(scales.y, scales.z));
-            if (maxAxis > maxScaleFilter) {
-                rgba.a = 0.0;
-            }
-        }
 
         // Pack into Spark format
         target = packSplatEncoding(center, scales, quaternion, rgba, rgbMinMaxLnScaleMinMax);
