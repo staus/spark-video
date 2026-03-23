@@ -726,9 +726,12 @@ export class DeltaSplatDecoder {
         );
 
         if (motionMag < DeltaSplatDecoder.STATIC_MOTION_THRESHOLD) {
-          // Static gaussian: store separately, never needs motion updates
-          this.staticGaussians.push(birth);
-          this.staticCount++;
+          if (!this.staticDataReady) {
+            // First loop: add to static pool (uploaded once to GPU)
+            this.staticGaussians.push(birth);
+            this.staticCount++;
+          }
+          // Subsequent loops: skip entirely (already in static texture)
           continue;
         }
       }

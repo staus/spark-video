@@ -12478,8 +12478,10 @@ const _DeltaSplatDecoder = class _DeltaSplatDecoder {
           birth.motion[0] ** 2 + birth.motion[1] ** 2 + birth.motion[2] ** 2
         );
         if (motionMag < _DeltaSplatDecoder.STATIC_MOTION_THRESHOLD) {
-          this.staticGaussians.push(birth);
-          this.staticCount++;
+          if (!this.staticDataReady) {
+            this.staticGaussians.push(birth);
+            this.staticCount++;
+          }
           continue;
         }
       }
