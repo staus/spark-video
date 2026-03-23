@@ -63,11 +63,19 @@ export declare class DeltaSplatDecoder {
     private motionMaxs;
     private motionRange;
     private maxActive;
-    private activeGaussians;
     private activeIndices;
     private freeSlots;
     private activeCount;
     currentFrameIndex: number;
+    private positions;
+    private motions;
+    private quatsEncoded;
+    private scalesEncoded;
+    private sh0Encoded;
+    private remainingFrames;
+    private justBorn;
+    private tempSlots;
+    private tempMotionMags;
     private framePixelData;
     private frameWidth;
     private frameHeight;
@@ -83,7 +91,7 @@ export declare class DeltaSplatDecoder {
     private gpuPositionBuffer;
     private gpuAttributeBuffer;
     private gpuTextureSize;
-    private staticGaussians;
+    private staticSlots;
     private staticCount;
     private staticPositionBuffer;
     private staticAttributeBuffer;
@@ -111,6 +119,12 @@ export declare class DeltaSplatDecoder {
      * @param width Frame width (optional, defaults to this.frameWidth)
      */
     private _getPixel;
+    /**
+     * Decode births directly into SoA buffers at specified slots.
+     * Zero per-frame allocations - all data written to pre-allocated arrays.
+     * @returns Number of births decoded, motion magnitudes stored in motionMags parameter
+     */
+    private _decodeBirthsToSoA;
     /**
      * Process a single frame: decode births, update positions, assemble SOG texture.
      * Returns { data: Uint8Array, count: number }
@@ -177,8 +191,8 @@ export declare class DeltaSplatDecoder {
     reset(): void;
     private _processOneFrame;
     private _updateActiveGaussians;
-    private _decodeBirths;
     private _assembleSogTexture;
+    private _encodePositionFromSoA;
     private _encodePositionInPlace;
     getTotalFrames(): number;
     hasKeyframes(): boolean;

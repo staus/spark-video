@@ -12075,7 +12075,7 @@ async function transcodeSpz(input) {
 const _DeltaSplatDecoder = class _DeltaSplatDecoder {
   constructor(metadata) {
     this.frameIndexToVideoIndex = null;
-    this.staticGaussians = [];
+    this.staticSlots = [];
     this.staticCount = 0;
     this.staticPositionBuffer = null;
     this.staticAttributeBuffer = null;
@@ -12103,7 +12103,6 @@ const _DeltaSplatDecoder = class _DeltaSplatDecoder {
     ]);
     const maxActive = metadata["4dgs"].max_active_gaussians;
     this.maxActive = maxActive;
-    this.activeGaussians = new Array(maxActive).fill(null);
     this.activeIndices = [];
     this.freeSlots = [];
     for (let i = maxActive - 1; i >= 0; i--) {
@@ -12111,6 +12110,17 @@ const _DeltaSplatDecoder = class _DeltaSplatDecoder {
     }
     this.activeCount = 0;
     this.currentFrameIndex = 0;
+    this.positions = new Float32Array(maxActive * 3);
+    this.motions = new Float32Array(maxActive * 3);
+    this.quatsEncoded = new Uint8Array(maxActive * 4);
+    this.scalesEncoded = new Uint8Array(maxActive * 4);
+    this.sh0Encoded = new Uint8Array(maxActive * 4);
+    this.remainingFrames = new Int16Array(maxActive);
+    this.remainingFrames.fill(-1);
+    this.justBorn = new Uint8Array(maxActive);
+    const maxBirths = Math.max(...metadata["4dgs"].birth_counts);
+    this.tempSlots = new Array(maxBirths);
+    this.tempMotionMags = new Float32Array(maxBirths);
     this.frameWidth = this.tileSize * metadata.grid[0];
     this.frameHeight = this.tileSize * metadata.grid[1];
     this.framePixelData = [];
@@ -12289,6 +12299,163 @@ const _DeltaSplatDecoder = class _DeltaSplatDecoder {
     ];
   }
   /**
+   * Decode births directly into SoA buffers at specified slots.
+   * Zero per-frame allocations - all data written to pre-allocated arrays.
+   * @returns Number of births decoded, motion magnitudes stored in motionMags parameter
+   */
+  _decodeBirthsToSoA(frameIndex, slots, motionMags) {
+    const birthCount = this.metadata["4dgs"].birth_counts[frameIndex];
+    if (birthCount === 0) return 0;
+    const isKeyframe = this.keyframeIndices.has(frameIndex);
+    let frameData;
+    let ts;
+    let frameWidth;
+    if (isKeyframe) {
+      const kfData = this.keyframeData.get(frameIndex);
+      if (!kfData) {
+        console.warn(`Keyframe ${frameIndex} not loaded`);
+        return 0;
+      }
+      frameData = kfData;
+      ts = this.keyframeTileSizes.get(frameIndex) ?? this.tileSize;
+      frameWidth = ts * this.metadata.grid[0];
+    } else {
+      let videoFrameIndex;
+      if (this.frameIndexToVideoIndex) {
+        const mappedIndex = this.frameIndexToVideoIndex.get(frameIndex);
+        if (mappedIndex !== void 0) {
+          videoFrameIndex = mappedIndex;
+        } else {
+          console.warn(
+            `Frame ${frameIndex} not found in frame_map, using direct index`
+          );
+          videoFrameIndex = frameIndex;
+        }
+      } else {
+        videoFrameIndex = frameIndex;
+      }
+      if (videoFrameIndex >= this.framePixelData.length) {
+        console.warn(
+          `Video frame index ${videoFrameIndex} out of bounds (${this.framePixelData.length} frames)`
+        );
+        return 0;
+      }
+      frameData = this.framePixelData[videoFrameIndex];
+      ts = this.tileSize;
+      frameWidth = this.frameWidth;
+    }
+    const layout = this.metadata.layout;
+    const maxLifetime = this.totalFrames - frameIndex;
+    const meansLOffX = layout.means_l[0] * ts;
+    const meansLOffY = layout.means_l[1] * ts;
+    const meansUOffX = layout.means_u[0] * ts;
+    const meansUOffY = layout.means_u[1] * ts;
+    const quatsOffX = layout.quats[0] * ts;
+    const quatsOffY = layout.quats[1] * ts;
+    const motionLOffX = layout.motion_l[0] * ts;
+    const motionLOffY = layout.motion_l[1] * ts;
+    const scalesOffX = layout.scales[0] * ts;
+    const scalesOffY = layout.scales[1] * ts;
+    const sh0OffX = layout.sh0[0] * ts;
+    const sh0OffY = layout.sh0[1] * ts;
+    const motionUOffX = layout.motion_u[0] * ts;
+    const motionUOffY = layout.motion_u[1] * ts;
+    const metaOffX = layout.meta[0] * ts;
+    const metaOffY = layout.meta[1] * ts;
+    const count = Math.min(birthCount, slots.length);
+    for (let i = 0; i < count; i++) {
+      const slot = slots[i];
+      const col = i % ts;
+      const row = Math.floor(i / ts);
+      let idx = ((meansLOffY + row) * frameWidth + meansLOffX + col) * 4;
+      const meansL0 = frameData[idx];
+      const meansL1 = frameData[idx + 1];
+      const meansL2 = frameData[idx + 2];
+      idx = ((meansUOffY + row) * frameWidth + meansUOffX + col) * 4;
+      const meansU0 = frameData[idx];
+      const meansU1 = frameData[idx + 1];
+      const meansU2 = frameData[idx + 2];
+      idx = ((quatsOffY + row) * frameWidth + quatsOffX + col) * 4;
+      const quats0 = frameData[idx];
+      const quats1 = frameData[idx + 1];
+      const quats2 = frameData[idx + 2];
+      const quats3 = frameData[idx + 3];
+      idx = ((motionLOffY + row) * frameWidth + motionLOffX + col) * 4;
+      const motionL0 = frameData[idx];
+      const motionL1 = frameData[idx + 1];
+      const motionL2 = frameData[idx + 2];
+      idx = ((scalesOffY + row) * frameWidth + scalesOffX + col) * 4;
+      const scales0 = frameData[idx];
+      const scales1 = frameData[idx + 1];
+      const scales2 = frameData[idx + 2];
+      const scales3 = frameData[idx + 3];
+      idx = ((sh0OffY + row) * frameWidth + sh0OffX + col) * 4;
+      const sh00 = frameData[idx];
+      const sh01 = frameData[idx + 1];
+      const sh02 = frameData[idx + 2];
+      const sh03 = frameData[idx + 3];
+      idx = ((motionUOffY + row) * frameWidth + motionUOffX + col) * 4;
+      const motionU0 = frameData[idx];
+      const motionU1 = frameData[idx + 1];
+      const motionU2 = frameData[idx + 2];
+      idx = ((metaOffY + row) * frameWidth + metaOffX + col) * 4;
+      const meta0 = frameData[idx];
+      const meta1 = frameData[idx + 1];
+      const posU16X = meansL0 + meansU0 * 256;
+      const posU16Y = meansL1 + meansU1 * 256;
+      const posU16Z = meansL2 + meansU2 * 256;
+      const posLogX = this.posMins[0] + posU16X / 65535 * this.posRange[0];
+      const posLogY = this.posMins[1] + posU16Y / 65535 * this.posRange[1];
+      const posLogZ = this.posMins[2] + posU16Z / 65535 * this.posRange[2];
+      const posX = Math.sign(posLogX) * (Math.exp(Math.abs(posLogX)) - 1);
+      const posY = Math.sign(posLogY) * (Math.exp(Math.abs(posLogY)) - 1);
+      const posZ = Math.sign(posLogZ) * (Math.exp(Math.abs(posLogZ)) - 1);
+      const motU16X = motionL0 + motionU0 * 256;
+      const motU16Y = motionL1 + motionU1 * 256;
+      const motU16Z = motionL2 + motionU2 * 256;
+      const motLogX = this.motionMins[0] + motU16X / 65535 * this.motionRange[0];
+      const motLogY = this.motionMins[1] + motU16Y / 65535 * this.motionRange[1];
+      const motLogZ = this.motionMins[2] + motU16Z / 65535 * this.motionRange[2];
+      const motX = Math.sign(motLogX) * (Math.exp(Math.abs(motLogX)) - 1);
+      const motY = Math.sign(motLogY) * (Math.exp(Math.abs(motLogY)) - 1);
+      const motZ = Math.sign(motLogZ) * (Math.exp(Math.abs(motLogZ)) - 1);
+      const rawLifetime = meta0 + meta1 * 256;
+      const lifetime = Math.min(rawLifetime, maxLifetime);
+      const posBase = slot * 3;
+      this.positions[posBase] = posX;
+      this.positions[posBase + 1] = posY;
+      this.positions[posBase + 2] = posZ;
+      this.motions[posBase] = motX;
+      this.motions[posBase + 1] = motY;
+      this.motions[posBase + 2] = motZ;
+      const attrBase = slot * 4;
+      this.quatsEncoded[attrBase] = quats0;
+      this.quatsEncoded[attrBase + 1] = quats1;
+      this.quatsEncoded[attrBase + 2] = quats2;
+      this.quatsEncoded[attrBase + 3] = quats3;
+      this.scalesEncoded[attrBase] = scales0;
+      this.scalesEncoded[attrBase + 1] = scales1;
+      this.scalesEncoded[attrBase + 2] = scales2;
+      this.scalesEncoded[attrBase + 3] = scales3;
+      this.sh0Encoded[attrBase] = sh00;
+      this.sh0Encoded[attrBase + 1] = sh01;
+      this.sh0Encoded[attrBase + 2] = sh02;
+      this.sh0Encoded[attrBase + 3] = sh03;
+      this.remainingFrames[slot] = lifetime;
+      this.justBorn[slot] = 1;
+      motionMags[i] = Math.sqrt(motX * motX + motY * motY + motZ * motZ);
+      if (frameIndex === 0 && i === 0) {
+        console.log(
+          `First birth: pos=(${posX.toFixed(3)}, ${posY.toFixed(3)}, ${posZ.toFixed(3)})`
+        );
+        console.log(
+          `  lifetime=${lifetime}, quats=[${quats0},${quats1},${quats2},${quats3}], scales=[${scales0},${scales1},${scales2},${scales3}]`
+        );
+      }
+    }
+    return count;
+  }
+  /**
    * Process a single frame: decode births, update positions, assemble SOG texture.
    * Returns { data: Uint8Array, count: number }
    */
@@ -12331,31 +12498,32 @@ const _DeltaSplatDecoder = class _DeltaSplatDecoder {
     const texSize = this.gpuTextureSize;
     const planeSize = texSize * texSize * 4;
     for (let idx = 0; idx < this.activeIndices.length; idx++) {
-      const g = this.activeGaussians[this.activeIndices[idx]];
-      if (!g) continue;
+      const slot = this.activeIndices[idx];
+      const srcPosBase = slot * 3;
+      const srcAttrBase = slot * 4;
       const row = Math.floor(idx / texSize);
       const col = idx % texSize;
       const posBase = (row * texSize + col) * 4;
-      this.gpuPositionBuffer[posBase] = g.position[0];
-      this.gpuPositionBuffer[posBase + 1] = g.position[1];
-      this.gpuPositionBuffer[posBase + 2] = g.position[2];
+      this.gpuPositionBuffer[posBase] = this.positions[srcPosBase];
+      this.gpuPositionBuffer[posBase + 1] = this.positions[srcPosBase + 1];
+      this.gpuPositionBuffer[posBase + 2] = this.positions[srcPosBase + 2];
       this.gpuPositionBuffer[posBase + 3] = 1;
       const pixelOffset = (row * texSize + col) * 4;
       const quatsBase = pixelOffset;
-      this.gpuAttributeBuffer[quatsBase] = g.quatsEncoded[0];
-      this.gpuAttributeBuffer[quatsBase + 1] = g.quatsEncoded[1];
-      this.gpuAttributeBuffer[quatsBase + 2] = g.quatsEncoded[2];
-      this.gpuAttributeBuffer[quatsBase + 3] = g.quatsEncoded[3];
+      this.gpuAttributeBuffer[quatsBase] = this.quatsEncoded[srcAttrBase];
+      this.gpuAttributeBuffer[quatsBase + 1] = this.quatsEncoded[srcAttrBase + 1];
+      this.gpuAttributeBuffer[quatsBase + 2] = this.quatsEncoded[srcAttrBase + 2];
+      this.gpuAttributeBuffer[quatsBase + 3] = this.quatsEncoded[srcAttrBase + 3];
       const scalesBase = planeSize + pixelOffset;
-      this.gpuAttributeBuffer[scalesBase] = g.scalesEncoded[0];
-      this.gpuAttributeBuffer[scalesBase + 1] = g.scalesEncoded[1];
-      this.gpuAttributeBuffer[scalesBase + 2] = g.scalesEncoded[2];
-      this.gpuAttributeBuffer[scalesBase + 3] = g.scalesEncoded[3];
+      this.gpuAttributeBuffer[scalesBase] = this.scalesEncoded[srcAttrBase];
+      this.gpuAttributeBuffer[scalesBase + 1] = this.scalesEncoded[srcAttrBase + 1];
+      this.gpuAttributeBuffer[scalesBase + 2] = this.scalesEncoded[srcAttrBase + 2];
+      this.gpuAttributeBuffer[scalesBase + 3] = this.scalesEncoded[srcAttrBase + 3];
       const sh0Base = planeSize * 2 + pixelOffset;
-      this.gpuAttributeBuffer[sh0Base] = g.sh0Encoded[0];
-      this.gpuAttributeBuffer[sh0Base + 1] = g.sh0Encoded[1];
-      this.gpuAttributeBuffer[sh0Base + 2] = g.sh0Encoded[2];
-      this.gpuAttributeBuffer[sh0Base + 3] = g.sh0Encoded[3];
+      this.gpuAttributeBuffer[sh0Base] = this.sh0Encoded[srcAttrBase];
+      this.gpuAttributeBuffer[sh0Base + 1] = this.sh0Encoded[srcAttrBase + 1];
+      this.gpuAttributeBuffer[sh0Base + 2] = this.sh0Encoded[srcAttrBase + 2];
+      this.gpuAttributeBuffer[sh0Base + 3] = this.sh0Encoded[srcAttrBase + 3];
     }
   }
   /**
@@ -12387,32 +12555,37 @@ const _DeltaSplatDecoder = class _DeltaSplatDecoder {
     this.staticPositionBuffer = new Float32Array(texSize * texSize * 4);
     this.staticAttributeBuffer = new Uint8Array(texSize * texSize * 3 * 4);
     const planeSize = texSize * texSize * 4;
-    for (let idx = 0; idx < this.staticGaussians.length; idx++) {
-      const g = this.staticGaussians[idx];
+    for (let idx = 0; idx < this.staticSlots.length; idx++) {
+      const slot = this.staticSlots[idx];
+      const srcPosBase = slot * 3;
+      const srcAttrBase = slot * 4;
       const row = Math.floor(idx / texSize);
       const col = idx % texSize;
       const posBase = (row * texSize + col) * 4;
-      this.staticPositionBuffer[posBase] = g.position[0];
-      this.staticPositionBuffer[posBase + 1] = g.position[1];
-      this.staticPositionBuffer[posBase + 2] = g.position[2];
+      this.staticPositionBuffer[posBase] = this.positions[srcPosBase];
+      this.staticPositionBuffer[posBase + 1] = this.positions[srcPosBase + 1];
+      this.staticPositionBuffer[posBase + 2] = this.positions[srcPosBase + 2];
       this.staticPositionBuffer[posBase + 3] = 1;
       const pixelOffset = (row * texSize + col) * 4;
       const quatsBase = pixelOffset;
-      this.staticAttributeBuffer[quatsBase] = g.quatsEncoded[0];
-      this.staticAttributeBuffer[quatsBase + 1] = g.quatsEncoded[1];
-      this.staticAttributeBuffer[quatsBase + 2] = g.quatsEncoded[2];
-      this.staticAttributeBuffer[quatsBase + 3] = g.quatsEncoded[3];
+      this.staticAttributeBuffer[quatsBase] = this.quatsEncoded[srcAttrBase];
+      this.staticAttributeBuffer[quatsBase + 1] = this.quatsEncoded[srcAttrBase + 1];
+      this.staticAttributeBuffer[quatsBase + 2] = this.quatsEncoded[srcAttrBase + 2];
+      this.staticAttributeBuffer[quatsBase + 3] = this.quatsEncoded[srcAttrBase + 3];
       const scalesBase = planeSize + pixelOffset;
-      this.staticAttributeBuffer[scalesBase] = g.scalesEncoded[0];
-      this.staticAttributeBuffer[scalesBase + 1] = g.scalesEncoded[1];
-      this.staticAttributeBuffer[scalesBase + 2] = g.scalesEncoded[2];
-      this.staticAttributeBuffer[scalesBase + 3] = g.scalesEncoded[3];
+      this.staticAttributeBuffer[scalesBase] = this.scalesEncoded[srcAttrBase];
+      this.staticAttributeBuffer[scalesBase + 1] = this.scalesEncoded[srcAttrBase + 1];
+      this.staticAttributeBuffer[scalesBase + 2] = this.scalesEncoded[srcAttrBase + 2];
+      this.staticAttributeBuffer[scalesBase + 3] = this.scalesEncoded[srcAttrBase + 3];
       const sh0Base = planeSize * 2 + pixelOffset;
-      this.staticAttributeBuffer[sh0Base] = g.sh0Encoded[0];
-      this.staticAttributeBuffer[sh0Base + 1] = g.sh0Encoded[1];
-      this.staticAttributeBuffer[sh0Base + 2] = g.sh0Encoded[2];
-      this.staticAttributeBuffer[sh0Base + 3] = g.sh0Encoded[3];
+      this.staticAttributeBuffer[sh0Base] = this.sh0Encoded[srcAttrBase];
+      this.staticAttributeBuffer[sh0Base + 1] = this.sh0Encoded[srcAttrBase + 1];
+      this.staticAttributeBuffer[sh0Base + 2] = this.sh0Encoded[srcAttrBase + 2];
+      this.staticAttributeBuffer[sh0Base + 3] = this.sh0Encoded[srcAttrBase + 3];
+      this.freeSlots.push(slot);
+      this.remainingFrames[slot] = -1;
     }
+    this.staticSlots = [];
     this.staticDataReady = true;
     console.log(
       `Static buffers initialized: ${this.staticCount} gaussians, ${this.staticTextureSize}x${this.staticTextureSize} texture, ${((this.staticPositionBuffer.byteLength + this.staticAttributeBuffer.byteLength) / 1024).toFixed(1)} KB`
@@ -12461,7 +12634,7 @@ const _DeltaSplatDecoder = class _DeltaSplatDecoder {
     };
   }
   reset() {
-    this.activeGaussians.fill(null);
+    this.remainingFrames.fill(-1);
     this.activeIndices = [];
     this.freeSlots = [];
     for (let i = this.maxActive - 1; i >= 0; i--) {
@@ -12472,72 +12645,133 @@ const _DeltaSplatDecoder = class _DeltaSplatDecoder {
   }
   _processOneFrame(frameIndex) {
     const isKeyframe = this.keyframeIndices.has(frameIndex);
+    const birthCount = this.metadata["4dgs"].birth_counts[frameIndex];
     if (isKeyframe && this.staticDataReady) {
       const cached = this.dynamicKeyframeBirthCache.get(frameIndex);
       if (cached) {
-        for (const { birth, originalLifetime } of cached) {
+        for (let i = 0; i < cached.count; i++) {
           if (this.freeSlots.length === 0) {
             console.warn(
               `No free slots for cached birth at frame ${frameIndex}`
             );
             break;
           }
-          const cloned = {
-            quatsEncoded: birth.quatsEncoded,
-            scalesEncoded: birth.scalesEncoded,
-            sh0Encoded: birth.sh0Encoded,
-            position: new Float32Array(birth.position),
-            motion: birth.motion,
-            remainingFrames: originalLifetime,
-            justBorn: true
-          };
           const slot = this.freeSlots.pop();
           if (slot === void 0) break;
-          this.activeGaussians[slot] = cloned;
+          const srcPosBase = i * 3;
+          const dstPosBase = slot * 3;
+          const srcAttrBase = i * 4;
+          const dstAttrBase = slot * 4;
+          this.positions[dstPosBase] = cached.positions[srcPosBase];
+          this.positions[dstPosBase + 1] = cached.positions[srcPosBase + 1];
+          this.positions[dstPosBase + 2] = cached.positions[srcPosBase + 2];
+          this.motions[dstPosBase] = cached.motions[srcPosBase];
+          this.motions[dstPosBase + 1] = cached.motions[srcPosBase + 1];
+          this.motions[dstPosBase + 2] = cached.motions[srcPosBase + 2];
+          this.quatsEncoded[dstAttrBase] = cached.quats[srcAttrBase];
+          this.quatsEncoded[dstAttrBase + 1] = cached.quats[srcAttrBase + 1];
+          this.quatsEncoded[dstAttrBase + 2] = cached.quats[srcAttrBase + 2];
+          this.quatsEncoded[dstAttrBase + 3] = cached.quats[srcAttrBase + 3];
+          this.scalesEncoded[dstAttrBase] = cached.scales[srcAttrBase];
+          this.scalesEncoded[dstAttrBase + 1] = cached.scales[srcAttrBase + 1];
+          this.scalesEncoded[dstAttrBase + 2] = cached.scales[srcAttrBase + 2];
+          this.scalesEncoded[dstAttrBase + 3] = cached.scales[srcAttrBase + 3];
+          this.sh0Encoded[dstAttrBase] = cached.sh0[srcAttrBase];
+          this.sh0Encoded[dstAttrBase + 1] = cached.sh0[srcAttrBase + 1];
+          this.sh0Encoded[dstAttrBase + 2] = cached.sh0[srcAttrBase + 2];
+          this.sh0Encoded[dstAttrBase + 3] = cached.sh0[srcAttrBase + 3];
+          this.remainingFrames[slot] = cached.lifetimes[i];
+          this.justBorn[slot] = 1;
           this.activeIndices.push(slot);
           this.activeCount++;
         }
         console.log(
-          `Keyframe ${frameIndex}: ${cached.length} dynamic births (from cache)`
+          `Keyframe ${frameIndex}: ${cached.count} dynamic births (from cache)`
         );
         this._updateActiveGaussians();
         return;
       }
     }
-    const births = this._decodeBirths(frameIndex);
-    const dynamicCache = [];
-    for (const birth of births) {
-      if (isKeyframe) {
-        const motionMag = Math.sqrt(
-          birth.motion[0] ** 2 + birth.motion[1] ** 2 + birth.motion[2] ** 2
-        );
-        if (motionMag < _DeltaSplatDecoder.STATIC_MOTION_THRESHOLD) {
-          if (!this.staticDataReady) {
-            this.staticGaussians.push(birth);
-            this.staticCount++;
-          }
-          continue;
-        }
-      }
-      if (this.freeSlots.length === 0) {
-        console.warn(`No free slots for birth at frame ${frameIndex}`);
-        break;
-      }
+    const slotsNeeded = Math.min(birthCount, this.freeSlots.length);
+    for (let i = 0; i < slotsNeeded; i++) {
       const slot = this.freeSlots.pop();
       if (slot === void 0) break;
-      this.activeGaussians[slot] = birth;
-      this.activeIndices.push(slot);
-      this.activeCount++;
-      if (isKeyframe && !this.staticDataReady) {
-        dynamicCache.push({ birth, originalLifetime: birth.remainingFrames });
+      this.tempSlots[i] = slot;
+    }
+    const decodedCount = this._decodeBirthsToSoA(
+      frameIndex,
+      this.tempSlots.slice(0, slotsNeeded),
+      this.tempMotionMags
+    );
+    let dynamicCount = 0;
+    for (let i = 0; i < decodedCount; i++) {
+      const slot = this.tempSlots[i];
+      const motionMag = this.tempMotionMags[i];
+      if (isKeyframe && motionMag < _DeltaSplatDecoder.STATIC_MOTION_THRESHOLD) {
+        if (!this.staticDataReady) {
+          this.staticSlots.push(slot);
+          this.staticCount++;
+        } else {
+          this.freeSlots.push(slot);
+          this.remainingFrames[slot] = -1;
+        }
+      } else {
+        this.activeIndices.push(slot);
+        this.activeCount++;
+        dynamicCount++;
       }
     }
-    if (isKeyframe && !this.staticDataReady && dynamicCache.length > 0) {
-      this.dynamicKeyframeBirthCache.set(frameIndex, dynamicCache);
+    if (isKeyframe && !this.staticDataReady && dynamicCount > 0) {
+      const cachePositions = new Float32Array(dynamicCount * 3);
+      const cacheMotions = new Float32Array(dynamicCount * 3);
+      const cacheQuats = new Uint8Array(dynamicCount * 4);
+      const cacheScales = new Uint8Array(dynamicCount * 4);
+      const cacheSh0 = new Uint8Array(dynamicCount * 4);
+      const cacheLifetimes = new Int16Array(dynamicCount);
+      let cacheIdx = 0;
+      for (let i = 0; i < decodedCount; i++) {
+        const motionMag = this.tempMotionMags[i];
+        if (motionMag >= _DeltaSplatDecoder.STATIC_MOTION_THRESHOLD) {
+          const slot = this.tempSlots[i];
+          const srcPosBase = slot * 3;
+          const srcAttrBase = slot * 4;
+          const dstPosBase = cacheIdx * 3;
+          const dstAttrBase = cacheIdx * 4;
+          cachePositions[dstPosBase] = this.positions[srcPosBase];
+          cachePositions[dstPosBase + 1] = this.positions[srcPosBase + 1];
+          cachePositions[dstPosBase + 2] = this.positions[srcPosBase + 2];
+          cacheMotions[dstPosBase] = this.motions[srcPosBase];
+          cacheMotions[dstPosBase + 1] = this.motions[srcPosBase + 1];
+          cacheMotions[dstPosBase + 2] = this.motions[srcPosBase + 2];
+          cacheQuats[dstAttrBase] = this.quatsEncoded[srcAttrBase];
+          cacheQuats[dstAttrBase + 1] = this.quatsEncoded[srcAttrBase + 1];
+          cacheQuats[dstAttrBase + 2] = this.quatsEncoded[srcAttrBase + 2];
+          cacheQuats[dstAttrBase + 3] = this.quatsEncoded[srcAttrBase + 3];
+          cacheScales[dstAttrBase] = this.scalesEncoded[srcAttrBase];
+          cacheScales[dstAttrBase + 1] = this.scalesEncoded[srcAttrBase + 1];
+          cacheScales[dstAttrBase + 2] = this.scalesEncoded[srcAttrBase + 2];
+          cacheScales[dstAttrBase + 3] = this.scalesEncoded[srcAttrBase + 3];
+          cacheSh0[dstAttrBase] = this.sh0Encoded[srcAttrBase];
+          cacheSh0[dstAttrBase + 1] = this.sh0Encoded[srcAttrBase + 1];
+          cacheSh0[dstAttrBase + 2] = this.sh0Encoded[srcAttrBase + 2];
+          cacheSh0[dstAttrBase + 3] = this.sh0Encoded[srcAttrBase + 3];
+          cacheLifetimes[cacheIdx] = this.remainingFrames[slot];
+          cacheIdx++;
+        }
+      }
+      this.dynamicKeyframeBirthCache.set(frameIndex, {
+        count: dynamicCount,
+        lifetimes: cacheLifetimes,
+        positions: cachePositions,
+        motions: cacheMotions,
+        quats: cacheQuats,
+        scales: cacheScales,
+        sh0: cacheSh0
+      });
     }
-    if (isKeyframe && births.length > 0) {
+    if (isKeyframe && decodedCount > 0) {
       console.log(
-        `Keyframe ${frameIndex}: ${births.length} births → ${this.staticCount} static (total), ${this.activeCount} dynamic (active)`
+        `Keyframe ${frameIndex}: ${decodedCount} births → ${this.staticCount} static (total), ${this.activeCount} dynamic (active)`
       );
     }
     this._updateActiveGaussians();
@@ -12547,178 +12781,24 @@ const _DeltaSplatDecoder = class _DeltaSplatDecoder {
     let writeIdx = 0;
     for (let readIdx = 0; readIdx < this.activeIndices.length; readIdx++) {
       const slot = this.activeIndices[readIdx];
-      const g = this.activeGaussians[slot];
-      if (!g) continue;
-      if (g.remainingFrames <= 0) {
-        this.activeGaussians[slot] = null;
+      if (this.remainingFrames[slot] <= 0) {
+        this.remainingFrames[slot] = -1;
         this.freeSlots.push(slot);
         this.activeCount--;
         continue;
       }
-      if (g.justBorn) {
-        g.justBorn = false;
+      if (this.justBorn[slot]) {
+        this.justBorn[slot] = 0;
       } else {
-        g.position[0] += g.motion[0];
-        g.position[1] += g.motion[1];
-        g.position[2] += g.motion[2];
+        const posBase = slot * 3;
+        this.positions[posBase] += this.motions[posBase];
+        this.positions[posBase + 1] += this.motions[posBase + 1];
+        this.positions[posBase + 2] += this.motions[posBase + 2];
       }
-      g.remainingFrames--;
+      this.remainingFrames[slot]--;
       this.activeIndices[writeIdx++] = slot;
     }
     this.activeIndices.length = writeIdx;
-  }
-  _decodeBirths(frameIndex) {
-    const birthCount = this.metadata["4dgs"].birth_counts[frameIndex];
-    if (birthCount === 0) return [];
-    const isKeyframe = this.keyframeIndices.has(frameIndex);
-    let frameData;
-    let ts;
-    let frameWidth;
-    if (isKeyframe) {
-      const kfData = this.keyframeData.get(frameIndex);
-      if (!kfData) {
-        console.warn(`Keyframe ${frameIndex} not loaded`);
-        return [];
-      }
-      frameData = kfData;
-      ts = this.keyframeTileSizes.get(frameIndex) ?? this.tileSize;
-      frameWidth = ts * this.metadata.grid[0];
-    } else {
-      let videoFrameIndex;
-      if (this.frameIndexToVideoIndex) {
-        const mappedIndex = this.frameIndexToVideoIndex.get(frameIndex);
-        if (mappedIndex !== void 0) {
-          videoFrameIndex = mappedIndex;
-        } else {
-          console.warn(
-            `Frame ${frameIndex} not found in frame_map, using direct index`
-          );
-          videoFrameIndex = frameIndex;
-        }
-      } else {
-        videoFrameIndex = frameIndex;
-      }
-      if (videoFrameIndex >= this.framePixelData.length) {
-        console.warn(
-          `Video frame index ${videoFrameIndex} out of bounds (${this.framePixelData.length} frames)`
-        );
-        return [];
-      }
-      frameData = this.framePixelData[videoFrameIndex];
-      ts = this.tileSize;
-      frameWidth = this.frameWidth;
-    }
-    const births = [];
-    const layout = this.metadata.layout;
-    const meansLOff = [layout.means_l[0] * ts, layout.means_l[1] * ts];
-    const meansUOff = [layout.means_u[0] * ts, layout.means_u[1] * ts];
-    const quatsOff = [layout.quats[0] * ts, layout.quats[1] * ts];
-    const motionLOff = [layout.motion_l[0] * ts, layout.motion_l[1] * ts];
-    const scalesOff = [layout.scales[0] * ts, layout.scales[1] * ts];
-    const sh0Off = [layout.sh0[0] * ts, layout.sh0[1] * ts];
-    const motionUOff = [layout.motion_u[0] * ts, layout.motion_u[1] * ts];
-    const metaOff = [layout.meta[0] * ts, layout.meta[1] * ts];
-    for (let i = 0; i < birthCount; i++) {
-      const col = i % ts;
-      const row = Math.floor(i / ts);
-      const meansL = this._getPixel(
-        frameData,
-        meansLOff[0] + col,
-        meansLOff[1] + row,
-        frameWidth
-      );
-      const meansU = this._getPixel(
-        frameData,
-        meansUOff[0] + col,
-        meansUOff[1] + row,
-        frameWidth
-      );
-      const quats = this._getPixel(
-        frameData,
-        quatsOff[0] + col,
-        quatsOff[1] + row,
-        frameWidth
-      );
-      const motionL = this._getPixel(
-        frameData,
-        motionLOff[0] + col,
-        motionLOff[1] + row,
-        frameWidth
-      );
-      const scales = this._getPixel(
-        frameData,
-        scalesOff[0] + col,
-        scalesOff[1] + row,
-        frameWidth
-      );
-      const sh0 = this._getPixel(
-        frameData,
-        sh0Off[0] + col,
-        sh0Off[1] + row,
-        frameWidth
-      );
-      const motionU = this._getPixel(
-        frameData,
-        motionUOff[0] + col,
-        motionUOff[1] + row,
-        frameWidth
-      );
-      const meta = this._getPixel(
-        frameData,
-        metaOff[0] + col,
-        metaOff[1] + row,
-        frameWidth
-      );
-      const posU16X = meansL[0] + meansU[0] * 256;
-      const posU16Y = meansL[1] + meansU[1] * 256;
-      const posU16Z = meansL[2] + meansU[2] * 256;
-      const posLogX = this.posMins[0] + posU16X / 65535 * this.posRange[0];
-      const posLogY = this.posMins[1] + posU16Y / 65535 * this.posRange[1];
-      const posLogZ = this.posMins[2] + posU16Z / 65535 * this.posRange[2];
-      const position = new Float32Array([
-        Math.sign(posLogX) * (Math.exp(Math.abs(posLogX)) - 1),
-        Math.sign(posLogY) * (Math.exp(Math.abs(posLogY)) - 1),
-        Math.sign(posLogZ) * (Math.exp(Math.abs(posLogZ)) - 1)
-      ]);
-      const motU16X = motionL[0] + motionU[0] * 256;
-      const motU16Y = motionL[1] + motionU[1] * 256;
-      const motU16Z = motionL[2] + motionU[2] * 256;
-      const motLogX = this.motionMins[0] + motU16X / 65535 * this.motionRange[0];
-      const motLogY = this.motionMins[1] + motU16Y / 65535 * this.motionRange[1];
-      const motLogZ = this.motionMins[2] + motU16Z / 65535 * this.motionRange[2];
-      const motion = new Float32Array([
-        Math.sign(motLogX) * (Math.exp(Math.abs(motLogX)) - 1),
-        Math.sign(motLogY) * (Math.exp(Math.abs(motLogY)) - 1),
-        Math.sign(motLogZ) * (Math.exp(Math.abs(motLogZ)) - 1)
-      ]);
-      const rawLifetime = meta[0] + meta[1] * 256;
-      const maxLifetime = this.totalFrames - frameIndex;
-      const lifetime = Math.min(rawLifetime, maxLifetime);
-      if (frameIndex === 0 && i === 0) {
-        console.log(
-          `First birth: pos=(${position[0].toFixed(3)}, ${position[1].toFixed(3)}, ${position[2].toFixed(3)})`
-        );
-        console.log(
-          `  lifetime=${lifetime}, quats=[${quats.join(",")}], scales=[${scales.join(",")}]`
-        );
-      }
-      births.push({
-        quatsEncoded: new Uint8Array([quats[0], quats[1], quats[2], quats[3]]),
-        scalesEncoded: new Uint8Array([
-          scales[0],
-          scales[1],
-          scales[2],
-          scales[3]
-        ]),
-        sh0Encoded: new Uint8Array([sh0[0], sh0[1], sh0[2], sh0[3]]),
-        position,
-        motion,
-        remainingFrames: lifetime,
-        justBorn: true
-        // Flag to skip first motion update
-      });
-    }
-    return births;
   }
   _assembleSogTexture() {
     const ts = this.sogTileSize;
@@ -12728,11 +12808,11 @@ const _DeltaSplatDecoder = class _DeltaSplatDecoder {
       this.sogTileData[i] = 255;
     }
     for (let idx = 0; idx < this.activeIndices.length; idx++) {
-      const g = this.activeGaussians[this.activeIndices[idx]];
-      if (!g) continue;
+      const slot = this.activeIndices[idx];
+      const srcAttrBase = slot * 4;
       const row = Math.floor(idx / ts);
       const col = idx % ts;
-      this._encodePositionInPlace(g.position, this.posEncodeBuf);
+      this._encodePositionFromSoA(slot, this.posEncodeBuf);
       const meansLBase = (row * sogWidth + col) * 4;
       this.sogTileData[meansLBase] = this.posEncodeBuf[0];
       this.sogTileData[meansLBase + 1] = this.posEncodeBuf[1];
@@ -12744,13 +12824,44 @@ const _DeltaSplatDecoder = class _DeltaSplatDecoder {
       this.sogTileData[meansUBase + 2] = this.posEncodeBuf[5];
       this.sogTileData[meansUBase + 3] = 255;
       const quatsBase = (row * sogWidth + ts * 2 + col) * 4;
-      this.sogTileData.set(g.quatsEncoded, quatsBase);
+      this.sogTileData[quatsBase] = this.quatsEncoded[srcAttrBase];
+      this.sogTileData[quatsBase + 1] = this.quatsEncoded[srcAttrBase + 1];
+      this.sogTileData[quatsBase + 2] = this.quatsEncoded[srcAttrBase + 2];
+      this.sogTileData[quatsBase + 3] = this.quatsEncoded[srcAttrBase + 3];
       const scalesBase = ((ts + row) * sogWidth + col) * 4;
-      this.sogTileData.set(g.scalesEncoded, scalesBase);
+      this.sogTileData[scalesBase] = this.scalesEncoded[srcAttrBase];
+      this.sogTileData[scalesBase + 1] = this.scalesEncoded[srcAttrBase + 1];
+      this.sogTileData[scalesBase + 2] = this.scalesEncoded[srcAttrBase + 2];
+      this.sogTileData[scalesBase + 3] = this.scalesEncoded[srcAttrBase + 3];
       const sh0Base = ((ts + row) * sogWidth + ts + col) * 4;
-      this.sogTileData.set(g.sh0Encoded, sh0Base);
+      this.sogTileData[sh0Base] = this.sh0Encoded[srcAttrBase];
+      this.sogTileData[sh0Base + 1] = this.sh0Encoded[srcAttrBase + 1];
+      this.sogTileData[sh0Base + 2] = this.sh0Encoded[srcAttrBase + 2];
+      this.sogTileData[sh0Base + 3] = this.sh0Encoded[srcAttrBase + 3];
     }
   }
+  _encodePositionFromSoA(slot, out) {
+    const base = slot * 3;
+    const posX = this.positions[base];
+    const posY = this.positions[base + 1];
+    const posZ = this.positions[base + 2];
+    const logX = Math.sign(posX) * Math.log1p(Math.abs(posX));
+    const logY = Math.sign(posY) * Math.log1p(Math.abs(posY));
+    const logZ = Math.sign(posZ) * Math.log1p(Math.abs(posZ));
+    const normX = (logX - this.posMins[0]) / this.posRange[0];
+    const normY = (logY - this.posMins[1]) / this.posRange[1];
+    const normZ = (logZ - this.posMins[2]) / this.posRange[2];
+    const u16X = Math.round(Math.max(0, Math.min(65535, normX * 65535)));
+    const u16Y = Math.round(Math.max(0, Math.min(65535, normY * 65535)));
+    const u16Z = Math.round(Math.max(0, Math.min(65535, normZ * 65535)));
+    out[0] = u16X & 255;
+    out[1] = u16Y & 255;
+    out[2] = u16Z & 255;
+    out[3] = u16X >> 8;
+    out[4] = u16Y >> 8;
+    out[5] = u16Z >> 8;
+  }
+  // Legacy method - kept for compatibility but unused in SoA path
   _encodePositionInPlace(pos, out) {
     const logX = Math.sign(pos[0]) * Math.log1p(Math.abs(pos[0]));
     const logY = Math.sign(pos[1]) * Math.log1p(Math.abs(pos[1]));
