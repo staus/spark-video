@@ -161,6 +161,13 @@ export class DeltaSplatDecoder {
   // 0.001 captures ~86% of keyframe births (motion below this is imperceptible)
   private static readonly STATIC_MOTION_THRESHOLD = 0.001;
 
+  // Cache for dynamic keyframe births (reused on subsequent loops to avoid re-decoding)
+  // Key: frame index, Value: array of dynamic births with original lifetime
+  private dynamicKeyframeBirthCache: Map<
+    number,
+    { birth: ActiveGaussian; originalLifetime: number }[]
+  > = new Map();
+
   constructor(metadata: Delta4DGSMetadata) {
     this.metadata = metadata;
     this.tileSize = metadata.tile_size;
@@ -710,13 +717,49 @@ export class DeltaSplatDecoder {
   }
 
   private _processOneFrame(frameIndex: number): void {
-    // 1. Decode births from delta frame
+    const isKeyframe = this.keyframeIndices.has(frameIndex);
+
+    // For keyframes on subsequent loops, use cached dynamic births (avoids re-decoding 205k births)
+    if (isKeyframe && this.staticDataReady) {
+      const cached = this.dynamicKeyframeBirthCache.get(frameIndex);
+      if (cached) {
+        for (const { birth, originalLifetime } of cached) {
+          if (this.freeSlots.length === 0) {
+            console.warn(
+              `No free slots for cached birth at frame ${frameIndex}`,
+            );
+            break;
+          }
+          // Clone birth with reset state (reuse TypedArrays, only reset mutable fields)
+          const cloned: ActiveGaussian = {
+            quatsEncoded: birth.quatsEncoded,
+            scalesEncoded: birth.scalesEncoded,
+            sh0Encoded: birth.sh0Encoded,
+            position: new Float32Array(birth.position),
+            motion: birth.motion,
+            remainingFrames: originalLifetime,
+            justBorn: true,
+          };
+          const slot = this.freeSlots.pop();
+          if (slot === undefined) break;
+          this.activeGaussians[slot] = cloned;
+          this.activeIndices.push(slot);
+          this.activeCount++;
+        }
+        console.log(
+          `Keyframe ${frameIndex}: ${cached.length} dynamic births (from cache)`,
+        );
+        this._updateActiveGaussians();
+        return;
+      }
+    }
+
+    // First loop or non-keyframe: decode births from delta frame
     const births = this._decodeBirths(frameIndex);
 
-    // 2. Add births to appropriate pool
-    // Keyframe births with zero/minimal motion go to static pool (uploaded once)
-    // All others go to dynamic pool (uploaded each frame)
-    const isKeyframe = this.keyframeIndices.has(frameIndex);
+    // Cache for dynamic keyframe births (populated on first pass)
+    const dynamicCache: { birth: ActiveGaussian; originalLifetime: number }[] =
+      [];
 
     for (const birth of births) {
       // Check if this is a static gaussian (keyframe birth with minimal motion)
@@ -746,6 +789,16 @@ export class DeltaSplatDecoder {
       this.activeGaussians[slot] = birth;
       this.activeIndices.push(slot);
       this.activeCount++;
+
+      // Cache dynamic keyframe births for subsequent loops
+      if (isKeyframe && !this.staticDataReady) {
+        dynamicCache.push({ birth, originalLifetime: birth.remainingFrames });
+      }
+    }
+
+    // Store dynamic keyframe birth cache
+    if (isKeyframe && !this.staticDataReady && dynamicCache.length > 0) {
+      this.dynamicKeyframeBirthCache.set(frameIndex, dynamicCache);
     }
 
     // Log keyframe static/dynamic split
@@ -756,7 +809,11 @@ export class DeltaSplatDecoder {
       );
     }
 
-    // 3. Update positions and decrement lifetimes (iterate only active slots)
+    this._updateActiveGaussians();
+  }
+
+  // Update positions and decrement lifetimes for active gaussians
+  private _updateActiveGaussians(): void {
     let writeIdx = 0;
     for (let readIdx = 0; readIdx < this.activeIndices.length; readIdx++) {
       const slot = this.activeIndices[readIdx];

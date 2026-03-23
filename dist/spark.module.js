@@ -12084,6 +12084,7 @@ const _DeltaSplatDecoder = class _DeltaSplatDecoder {
     this.dynamicTextureSize = 0;
     this.dynamicPositionBuffer = null;
     this.dynamicAttributeBuffer = null;
+    this.dynamicKeyframeBirthCache = /* @__PURE__ */ new Map();
     this.metadata = metadata;
     this.tileSize = metadata.tile_size;
     this.posMins = new Float32Array(metadata.sog.means.mins);
@@ -12470,8 +12471,41 @@ const _DeltaSplatDecoder = class _DeltaSplatDecoder {
     this.currentFrameIndex = 0;
   }
   _processOneFrame(frameIndex) {
-    const births = this._decodeBirths(frameIndex);
     const isKeyframe = this.keyframeIndices.has(frameIndex);
+    if (isKeyframe && this.staticDataReady) {
+      const cached = this.dynamicKeyframeBirthCache.get(frameIndex);
+      if (cached) {
+        for (const { birth, originalLifetime } of cached) {
+          if (this.freeSlots.length === 0) {
+            console.warn(
+              `No free slots for cached birth at frame ${frameIndex}`
+            );
+            break;
+          }
+          const cloned = {
+            quatsEncoded: birth.quatsEncoded,
+            scalesEncoded: birth.scalesEncoded,
+            sh0Encoded: birth.sh0Encoded,
+            position: new Float32Array(birth.position),
+            motion: birth.motion,
+            remainingFrames: originalLifetime,
+            justBorn: true
+          };
+          const slot = this.freeSlots.pop();
+          if (slot === void 0) break;
+          this.activeGaussians[slot] = cloned;
+          this.activeIndices.push(slot);
+          this.activeCount++;
+        }
+        console.log(
+          `Keyframe ${frameIndex}: ${cached.length} dynamic births (from cache)`
+        );
+        this._updateActiveGaussians();
+        return;
+      }
+    }
+    const births = this._decodeBirths(frameIndex);
+    const dynamicCache = [];
     for (const birth of births) {
       if (isKeyframe) {
         const motionMag = Math.sqrt(
@@ -12494,12 +12528,22 @@ const _DeltaSplatDecoder = class _DeltaSplatDecoder {
       this.activeGaussians[slot] = birth;
       this.activeIndices.push(slot);
       this.activeCount++;
+      if (isKeyframe && !this.staticDataReady) {
+        dynamicCache.push({ birth, originalLifetime: birth.remainingFrames });
+      }
+    }
+    if (isKeyframe && !this.staticDataReady && dynamicCache.length > 0) {
+      this.dynamicKeyframeBirthCache.set(frameIndex, dynamicCache);
     }
     if (isKeyframe && births.length > 0) {
       console.log(
         `Keyframe ${frameIndex}: ${births.length} births → ${this.staticCount} static (total), ${this.activeCount} dynamic (active)`
       );
     }
+    this._updateActiveGaussians();
+  }
+  // Update positions and decrement lifetimes for active gaussians
+  _updateActiveGaussians() {
     let writeIdx = 0;
     for (let readIdx = 0; readIdx < this.activeIndices.length; readIdx++) {
       const slot = this.activeIndices[readIdx];

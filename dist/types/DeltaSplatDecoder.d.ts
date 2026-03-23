@@ -93,6 +93,7 @@ export declare class DeltaSplatDecoder {
     private dynamicPositionBuffer;
     private dynamicAttributeBuffer;
     private static readonly STATIC_MOTION_THRESHOLD;
+    private dynamicKeyframeBirthCache;
     constructor(metadata: Delta4DGSMetadata);
     loadDeltaFrames(webpBlob: Blob): Promise<void>;
     /**
@@ -175,6 +176,7 @@ export declare class DeltaSplatDecoder {
     };
     reset(): void;
     private _processOneFrame;
+    private _updateActiveGaussians;
     private _decodeBirths;
     private _assembleSogTexture;
     private _encodePositionInPlace;
